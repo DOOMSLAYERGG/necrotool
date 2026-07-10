@@ -426,6 +426,7 @@ UI.watermark = ui.new_checkbox("LUA", "A", "\aFFFFFFFF  Watermark")
 UI.watermark_name = ui.new_combobox("LUA", "A", "\aFFFFFFFF    Name", {"necroptosis.red", "winston.red", "mood.blue", "sp!dusttale.red"})
 UI.watermark_style = ui.new_combobox("LUA", "A", "\aFFFFFFFF    Style\nwatermark", {"Lavender", "Windows", "Black", "Pink"})
 UI.watermark_color = ui.new_color_picker("LUA", "A", "\aFFFFFFFF    Border color\nwatermark", 255, 255, 255, 255)
+UI.watermark_avatar = ui.new_checkbox("LUA", "A", "\aFFFFFFFF    Steam avatar")
 UI.spectators = ui.new_checkbox("LUA", "A", "\aFFFFFFFF  Spectators")
 UI.spectators_size = ui.new_combobox("LUA", "A", "\aFFFFFFFF    Size\nspectators", {"Small", "Medium"})
 UI.spectators_style = ui.new_combobox("LUA", "A", "\aFFFFFFFF    Style\nspectators", {"Classic"})
@@ -1196,6 +1197,7 @@ local function update_visibility_misc()
     ui.set_visible(UI.watermark_name, is_misc and watermark_enabled)
     ui.set_visible(UI.watermark_style, is_misc and watermark_enabled)
     ui.set_visible(UI.watermark_color, is_misc and watermark_enabled)
+    ui.set_visible(UI.watermark_avatar, is_misc and watermark_enabled)
     ui.set_visible(UI.spectators_size, is_misc and spectators_enabled)
     ui.set_visible(UI.spectators_style, is_misc and spectators_enabled)
     ui.set_visible(UI.spectators_anim, is_misc and spectators_enabled)
@@ -2969,6 +2971,12 @@ local function draw_watermark()
     
     local style = ui.get(UI.watermark_style)
 
+    -- Steam avatar sits in its own box next to the watermark (per-style frame)
+    local show_avatar = ui.get(UI.watermark_avatar)
+    if show_avatar then
+        UI.avatar.ensure()
+    end
+
     -- Lavender style: one-to-one look of the lavender_solus watermark
     if style == "Lavender" then
         -- split the name at its first dot so the suffix (".red"/".blue"/…) is
@@ -2996,6 +3004,10 @@ local function draw_watermark()
         UI.lav.fade_rect(lav_x - 1, lav_y, lav_w + 2, lav_h, 5, P_R, P_G, P_B, watermark_alpha, 190, lav_h * 2)
 
         renderer.text(lav_x + 5, lav_y + (lav_h - mh) / 2, 226, 226, 226, watermark_alpha, "", 0, lav_str)
+
+        if show_avatar then
+            UI.avatar.draw_box("Lavender", lav_x, lav_y, lav_h, P_R, P_G, P_B, watermark_alpha)
+        end
         return
     end
 
@@ -3023,6 +3035,10 @@ local function draw_watermark()
         -- info (accent with drop shadow)
         renderer.text(win_info_x + 1, win_text_y + 1, 0, 0, 0, watermark_alpha * 0.5, "", 0, info_text)
         renderer.text(win_info_x, win_text_y, P_R, P_G, P_B, watermark_alpha, "", 0, info_text)
+
+        if show_avatar then
+            UI.avatar.draw_box("Windows", win_x, win_y, win_h, P_R, P_G, P_B, watermark_alpha)
+        end
         return
     end
 
@@ -3121,6 +3137,11 @@ local function draw_watermark()
         local sparkle_size = 2 + math.sin(sparkle_time * 2 + i) * 0.5
         renderer.circle(sparkle_x, sparkle_y, 255, 200, 255, sparkle_alpha * 0.3, sparkle_size + 2, 0, 1)
         renderer.circle(sparkle_x, sparkle_y, 255, 182, 220, sparkle_alpha, sparkle_size, 0, 1)
+    end
+
+    -- avatar box for the Black / Pink styles (Lavender & Windows return earlier)
+    if show_avatar then
+        UI.avatar.draw_box(style, box_x, box_y, box_h, P_R, P_G, P_B, watermark_alpha)
     end
 end
 
@@ -4334,6 +4355,113 @@ function UI.lav.draw(kb_r, kb_g, kb_b)
             count = count + 1
         end
     end
+end
+
+-- ===== Steam avatar box (ported from EmberLash) =====
+-- Fetches the local player's Steam avatar via gamesense/images, rounds its
+-- corners with ffi and draws it in its OWN box, disconnected from the
+-- watermark and framed to match whichever watermark style is active.
+-- Lives on the UI table so no new chunk-level locals are introduced.
+UI.avatar = {
+    tex = nil,        -- rounded avatar texture handle
+    steam64 = nil,    -- steam64 the current texture belongs to
+    last_try = 0
+}
+
+function UI.avatar.round(img, radius)
+    if not img or img.type ~= "rgba" then return nil end
+
+    local w, h = img.width, img.height
+    radius = math.min(radius or math.floor(math.min(w, h) * 0.25), math.floor(math.min(w, h) / 2))
+
+    local size = #img.contents
+    local src = ffi.cast("uint8_t*", ffi.cast("const char*", img.contents))
+    local dst = ffi.new("uint8_t[?]", size)
+    ffi.copy(dst, src, size)
+
+    local function inside(px, py, cx, cy, r)
+        local dx, dy = px - cx, py - cy
+        return dx * dx + dy * dy <= r * r
+    end
+
+    for y = 0, h - 1 do
+        for x = 0, w - 1 do
+            local keep = true
+            if x < radius and y < radius then
+                keep = inside(x, y, radius, radius, radius)
+            elseif x >= w - radius and y < radius then
+                keep = inside(x, y, w - radius - 1, radius, radius)
+            elseif x < radius and y >= h - radius then
+                keep = inside(x, y, radius, h - radius - 1, radius)
+            elseif x >= w - radius and y >= h - radius then
+                keep = inside(x, y, w - radius - 1, h - radius - 1, radius)
+            end
+            if not keep then
+                dst[(y * w + x) * 4 + 3] = 0
+            end
+        end
+    end
+
+    return renderer.load_rgba(ffi.string(dst, size), w, h)
+end
+
+function UI.avatar.ensure()
+    local lp = entity.get_local_player()
+    if not lp then return end
+
+    local s64 = entity.get_steam64(lp)
+    if not s64 or s64 == 0 then return end
+    if UI.avatar.tex and UI.avatar.steam64 == s64 then return end
+
+    -- throttle retries: the avatar may not be cached by Steam yet
+    local now = globals.realtime()
+    if now - UI.avatar.last_try < 1 then return end
+    UI.avatar.last_try = now
+
+    -- fully guarded: images.get_steam_avatar / renderer.load_rgba may be absent
+    -- on some builds, and must never take down watermark rendering
+    local ok, t = pcall(function()
+        local raw = images.get_steam_avatar(s64)
+        if not raw then return nil end
+        return UI.avatar.round(raw, 32)
+    end)
+
+    if ok and t then
+        UI.avatar.tex = t
+        UI.avatar.steam64 = s64
+    end
+end
+
+-- draw the framed avatar box; its right edge sits `gap` px left of `wm_left`
+function UI.avatar.draw_box(style, wm_left, box_y, box_h, r, g, b, alpha)
+    if not UI.avatar.tex then return end
+
+    local gap = 6
+    local size = box_h
+    local x = wm_left - gap - size
+    local y = box_y
+    local pad = 4
+
+    if style == "Lavender" then
+        UI.lav.rounded_rectangle(x, y, size, size, 19, 19, 19, alpha, 5)
+        UI.lav.rectangle_outline(x, y, size, size, 32, 32, 32, alpha, 2, 3)
+        UI.lav.fade_rect(x - 1, y, size + 2, size, 5, r, g, b, alpha, 190, size * 2)
+    elseif style == "Windows" then
+        UI.win_interface(x, y, size, size, r, g, b, alpha)
+    elseif style == "Black" then
+        renderer.rectangle(x, y, size, size, 20, 15, 20, alpha * 0.85)
+        renderer.gradient(x, y, size, 2, r, g, b, alpha * 0.9, r, g, b, alpha * 0.9, true)
+        renderer.gradient(x, y + size - 2, size, 2, r, g, b, alpha * 0.7, r, g, b, alpha * 0.7, true)
+        renderer.rectangle(x, y, 2, size, r, g, b, alpha)
+        renderer.rectangle(x + size - 2, y, 2, size, r, g, b, alpha)
+    else -- Pink / default
+        renderer.rectangle(x, y, size, size, 10, 8, 15, alpha * 0.6)
+        renderer.gradient(x, y, size, 2, r, g, b, alpha, r, g, b, alpha, true)
+        renderer.gradient(x, y + size - 1, size, 1, r, g, b, alpha * 0.4, r, g, b, alpha * 0.4, true)
+    end
+
+    -- the avatar itself (guarded: renderer.texture may vary across builds)
+    pcall(renderer.texture, UI.avatar.tex, x + pad, y + pad, size - pad * 2, size - pad * 2, 255, 255, 255, alpha, "f")
 end
 
 local function draw_keybinds()
