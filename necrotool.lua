@@ -477,7 +477,8 @@ UI.setup_focus = ui.new_combobox("LUA", "A", "\aFFFFFFFF  setup focus", {
     "Notifications", "Kill image", "Hit effect", "Healthbar", "Scope", "Tracers", "Trails", "Grenade trail",
     "Fog", "Wall color", "Bloom", "Exposure", "Model brightness", "Smooth animation", "Smooth camera",
     "Model changer", "Hit sound", "Death sound", "Viewmodel", "Console color", "Aspect ratio", "Thirdperson", "Skybox", "FOV override",
-    "Clantag", "Watermark", "Spectators", "Keybinds", "Indicators"
+    "Clantag", "Watermark", "Spectators", "Keybinds", "Indicators",
+    "Miss log", "First person nade", "FPS Boost", "Warmup"
 })
 ui.set_visible(UI.setup_focus, false)
 UI.setup_jump = function(name)
@@ -487,7 +488,7 @@ end
 
 -- rinnegan-style "Setup" rows for the Misc features (grey = off, accent = on)
 do
-    local names = {"Clantag", "Watermark", "Spectators", "Keybinds", "Indicators"}
+    local names = {"Clantag", "Watermark", "Spectators", "Keybinds", "Indicators", "Miss log", "First person nade", "FPS Boost", "Warmup"}
     for _, nm in ipairs(names) do
         UI.su_off[nm] = ui.new_button("LUA", "A", "\aC8C8C8C8 Setup " .. nm, function() UI.setup_jump(nm) end)
         UI.su_on[nm]  = ui.new_button("LUA", "A", "\aB9BEFFFF Setup " .. nm, function() UI.setup_jump(nm) end)
@@ -1347,6 +1348,10 @@ local function update_visibility_misc()
     row("Spectators", spectators_enabled)
     row("Keybinds", keybinds_enabled)
     row("Indicators", indicators_enabled)
+    row("Miss log", ui.get(UI.miss_log))
+    row("First person nade", ui.get(UI.first_person_nade))
+    row("FPS Boost", ui.get(UI.fps_boost))
+    row("Warmup", ui.get(UI.warmup_helper))
 
     -- the enable toggle + settings are shown only for the focused feature
     ui.set_visible(UI.clantag, f_clantag)
@@ -1373,17 +1378,21 @@ local function update_visibility_misc()
     ui.set_visible(UI.indicators_features, f_indicators and indicators_enabled)
     ui.set_visible(UI.indicators_color, f_indicators and indicators_enabled)
 
-    -- the plain Misc extras only show on the landing (nothing focused)
-    local extras = is_misc and none
-    ui.set_visible(UI.miss_log, extras)
-    ui.set_visible(UI.first_person_nade, extras)
-    ui.set_visible(UI.warmup_divider, extras)
-    ui.set_visible(UI.warmup_warning, extras)
-    ui.set_visible(UI.warmup_helper, extras)
+    -- remaining Misc functions, now as their own focus-gated Setup entries
+    local f_misslog = is_misc and focus == "Miss log"
+    ui.set_visible(UI.miss_log, f_misslog)
 
-    local fps_boost_enabled = ui.get(UI.fps_boost)
-    ui.set_visible(UI.fps_boost, extras)
-    ui.set_visible(UI.fps_boost_options, extras and fps_boost_enabled)
+    local f_firstperson = is_misc and focus == "First person nade"
+    ui.set_visible(UI.first_person_nade, f_firstperson)
+
+    local f_fpsboost = is_misc and focus == "FPS Boost"
+    ui.set_visible(UI.fps_boost, f_fpsboost)
+    ui.set_visible(UI.fps_boost_options, f_fpsboost and ui.get(UI.fps_boost))
+
+    local f_warmup = is_misc and focus == "Warmup"
+    ui.set_visible(UI.warmup_helper, f_warmup)
+    ui.set_visible(UI.warmup_divider, f_warmup)
+    ui.set_visible(UI.warmup_warning, f_warmup)
 
     local show_clantag_opts = f_clantag and clantag_enabled
     ui.set_visible(UI.clantag_style, show_clantag_opts)
