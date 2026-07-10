@@ -327,12 +327,14 @@ do
         UI.nav[name] = ui.new_button("LUA", "A", "\aB9BEFFFF » \aFFFFFFFF" .. name, function()
             ui.set(UI.tab, name)
             ui.set(UI.nav_open, true)          -- expand into the section
+            if UI.setup_focus then ui.set(UI.setup_focus, "None") end  -- land on the list
             if UI._update_visibility then UI._update_visibility() end
         end)
     end
 end
 UI.nav_back = ui.new_button("LUA", "A", "\aB9BEFFFF « \aFFFFFFFFBack", function()
     ui.set(UI.nav_open, false)                 -- collapse back to the menu
+    if UI.setup_focus then ui.set(UI.setup_focus, "None") end
     if UI._update_visibility then UI._update_visibility() end
 end)
 
@@ -444,8 +446,22 @@ UI.smooth_camera_dynamic_fov = ui.new_checkbox("LUA", "A", "\aFFFFFFFF    Dynami
 UI.smooth_camera_fov_intensity = ui.new_slider("LUA", "A", "\aFFFFFFFF    FOV intensity", 0, 30, 10, true, "°", 1)
 UI.smooth_camera_roll = ui.new_slider("LUA", "A", "\aFFFFFFFF    Camera roll", -45, 45, 0, true, "°", 1)
 
+-- ===== per-feature "Setup" navigation (rinnegan-style accordion) =====
+-- Hidden state holding the focused feature (or "None"). Each "Setup <name>"
+-- button toggles the focus, and the Misc tab then shows ONLY that feature's
+-- settings (click again to collapse back to the list).
+UI.setup_focus = ui.new_combobox("LUA", "A", "\aFFFFFFFF  setup focus",
+    {"None", "Clantag", "Watermark", "Spectators", "Keybinds", "Indicators"})
+ui.set_visible(UI.setup_focus, false)
+UI.setup_jump = function(name)
+    ui.set(UI.setup_focus, ui.get(UI.setup_focus) == name and "None" or name)
+    if UI._update_visibility then UI._update_visibility() end
+end
+
+UI.setup_btn_clantag = ui.new_button("LUA", "A", "\aB9BEFFFF » \aFFFFFFFFSetup Clantag", function() UI.setup_jump("Clantag") end)
 UI.clantag = ui.new_checkbox("LUA", "A", "\aFFFFFFFF  Clantag")
 UI.clantag_style = ui.new_combobox("LUA", "A", "\aFFFFFFFF    Style\nclantag", {"V2", "V1"})
+UI.setup_btn_watermark = ui.new_button("LUA", "A", "\aB9BEFFFF » \aFFFFFFFFSetup Watermark", function() UI.setup_jump("Watermark") end)
 UI.watermark = ui.new_checkbox("LUA", "A", "\aFFFFFFFF  Watermark")
 UI.watermark_name = ui.new_combobox("LUA", "A", "\aFFFFFFFF    Name", {"necroptosis.red", "winston.red", "mood.blue", "sp!dusttale.red"})
 UI.watermark_style = ui.new_combobox("LUA", "A", "\aFFFFFFFF    Style\nwatermark", {"Lavender", "Windows", "Black", "Pink"})
@@ -453,16 +469,19 @@ UI.watermark_color = ui.new_color_picker("LUA", "A", "\aFFFFFFFF    Border color
 UI.watermark_avatar = ui.new_checkbox("LUA", "A", "\aFFFFFFFF    Steam avatar")
 UI.watermark_setup = ui.new_checkbox("LUA", "A", "\aFFFFFFFF    Show setup watermark")
 UI.watermark_setup_elems = ui.new_multiselect("LUA", "A", "\aFFFFFFFF      Setup elements", {"FPS", "Ping", "Loss", "Var", "Timeout"})
+UI.setup_btn_spectators = ui.new_button("LUA", "A", "\aB9BEFFFF » \aFFFFFFFFSetup Spectators", function() UI.setup_jump("Spectators") end)
 UI.spectators = ui.new_checkbox("LUA", "A", "\aFFFFFFFF  Spectators")
 UI.spectators_size = ui.new_combobox("LUA", "A", "\aFFFFFFFF    Size\nspectators", {"Small", "Medium"})
 UI.spectators_style = ui.new_combobox("LUA", "A", "\aFFFFFFFF    Style\nspectators", {"Classic"})
 UI.spectators_anim = ui.new_combobox("LUA", "A", "\aFFFFFFFF    Animation\nspectators", {"None", "Moving", "Moving title", "Bouncy"})
 UI.spectators_color = ui.new_color_picker("LUA", "A", "\aFFFFFFFF    Color\nspectators", 255, 255, 255, 255)
+UI.setup_btn_keybinds = ui.new_button("LUA", "A", "\aB9BEFFFF » \aFFFFFFFFSetup Keybinds", function() UI.setup_jump("Keybinds") end)
 UI.keybinds = ui.new_checkbox("LUA", "A", "\aFFFFFFFF  Keybinds")
 UI.keybinds_size = ui.new_combobox("LUA", "A", "\aFFFFFFFF    Size\nkeybinds", {"Small", "Medium", "Big"})
 UI.keybinds_style = ui.new_combobox("LUA", "A", "\aFFFFFFFF    Style\nkeybinds", {"Classic", "Windows", "Lavender"})
 UI.keybinds_anim = ui.new_combobox("LUA", "A", "\aFFFFFFFF    Animation\nkeybinds", {"None", "Moving", "Moving title", "Bouncy"})
 UI.keybinds_color = ui.new_color_picker("LUA", "A", "\aFFFFFFFF    Color\nkeybinds", 255, 255, 255, 255)
+UI.setup_btn_indicators = ui.new_button("LUA", "A", "\aB9BEFFFF » \aFFFFFFFFSetup Indicators", function() UI.setup_jump("Indicators") end)
 UI.indicators = ui.new_checkbox("LUA", "A", "\aFFFFFFFF  Indicators")
 UI.indicators_size = ui.new_combobox("LUA", "A", "\aFFFFFFFF    Size\nindicators", {"Small", "Medium", "Big"})
 UI.indicators_features = ui.new_multiselect("LUA", "A", "\aFFFFFFFF    Features", {
@@ -1208,46 +1227,67 @@ local function update_visibility_misc()
     local enabled = ui.get(UI.enabled) and ui.get(UI.nav_open)
     local is_misc = enabled and ui.get(UI.tab) == "Misc"
 
-    ui.set_visible(UI.clantag, is_misc)
-    ui.set_visible(UI.watermark, is_misc)
-    ui.set_visible(UI.spectators, is_misc)
-    ui.set_visible(UI.keybinds, is_misc)
-    ui.set_visible(UI.indicators, is_misc)
-    
+    -- per-feature "Setup" accordion: one feature focused at a time (or "None")
+    local focus = ui.get(UI.setup_focus)
+    local none  = (focus == "None")
+
+    -- the "Setup <name>" buttons are the always-visible list inside the Misc tab
+    ui.set_visible(UI.setup_btn_clantag, is_misc)
+    ui.set_visible(UI.setup_btn_watermark, is_misc)
+    ui.set_visible(UI.setup_btn_spectators, is_misc)
+    ui.set_visible(UI.setup_btn_keybinds, is_misc)
+    ui.set_visible(UI.setup_btn_indicators, is_misc)
+
+    -- a feature's own controls are shown only while it is the focused one
+    local f_clantag    = is_misc and focus == "Clantag"
+    local f_watermark  = is_misc and focus == "Watermark"
+    local f_spectators = is_misc and focus == "Spectators"
+    local f_keybinds   = is_misc and focus == "Keybinds"
+    local f_indicators = is_misc and focus == "Indicators"
+
+    ui.set_visible(UI.clantag, f_clantag)
+    ui.set_visible(UI.watermark, f_watermark)
+    ui.set_visible(UI.spectators, f_spectators)
+    ui.set_visible(UI.keybinds, f_keybinds)
+    ui.set_visible(UI.indicators, f_indicators)
+
     local clantag_enabled = ui.get(UI.clantag)
     local watermark_enabled = ui.get(UI.watermark)
     local spectators_enabled = ui.get(UI.spectators)
     local keybinds_enabled = ui.get(UI.keybinds)
     local indicators_enabled = ui.get(UI.indicators)
-    
-    ui.set_visible(UI.watermark_name, is_misc and watermark_enabled)
-    ui.set_visible(UI.watermark_style, is_misc and watermark_enabled)
-    ui.set_visible(UI.watermark_color, is_misc and watermark_enabled)
-    ui.set_visible(UI.watermark_avatar, is_misc and watermark_enabled)
-    ui.set_visible(UI.watermark_setup, is_misc and watermark_enabled)
-    ui.set_visible(UI.watermark_setup_elems, is_misc and watermark_enabled and ui.get(UI.watermark_setup))
-    ui.set_visible(UI.spectators_size, is_misc and spectators_enabled)
-    ui.set_visible(UI.spectators_style, is_misc and spectators_enabled)
-    ui.set_visible(UI.spectators_anim, is_misc and spectators_enabled)
-    ui.set_visible(UI.spectators_color, is_misc and spectators_enabled)
-    ui.set_visible(UI.keybinds_size, is_misc and keybinds_enabled)
-    ui.set_visible(UI.keybinds_style, is_misc and keybinds_enabled)
-    ui.set_visible(UI.keybinds_anim, is_misc and keybinds_enabled)
-    ui.set_visible(UI.keybinds_color, is_misc and keybinds_enabled)
-    ui.set_visible(UI.indicators_size, is_misc and indicators_enabled)
-    ui.set_visible(UI.indicators_features, is_misc and indicators_enabled)
-    ui.set_visible(UI.indicators_color, is_misc and indicators_enabled)
-    ui.set_visible(UI.miss_log, is_misc)
-    ui.set_visible(UI.first_person_nade, is_misc)
-    ui.set_visible(UI.warmup_divider, is_misc)
-    ui.set_visible(UI.warmup_warning, is_misc)
-    ui.set_visible(UI.warmup_helper, is_misc)
-    
+
+    ui.set_visible(UI.watermark_name, f_watermark and watermark_enabled)
+    ui.set_visible(UI.watermark_style, f_watermark and watermark_enabled)
+    ui.set_visible(UI.watermark_color, f_watermark and watermark_enabled)
+    ui.set_visible(UI.watermark_avatar, f_watermark and watermark_enabled)
+    ui.set_visible(UI.watermark_setup, f_watermark and watermark_enabled)
+    ui.set_visible(UI.watermark_setup_elems, f_watermark and watermark_enabled and ui.get(UI.watermark_setup))
+    ui.set_visible(UI.spectators_size, f_spectators and spectators_enabled)
+    ui.set_visible(UI.spectators_style, f_spectators and spectators_enabled)
+    ui.set_visible(UI.spectators_anim, f_spectators and spectators_enabled)
+    ui.set_visible(UI.spectators_color, f_spectators and spectators_enabled)
+    ui.set_visible(UI.keybinds_size, f_keybinds and keybinds_enabled)
+    ui.set_visible(UI.keybinds_style, f_keybinds and keybinds_enabled)
+    ui.set_visible(UI.keybinds_anim, f_keybinds and keybinds_enabled)
+    ui.set_visible(UI.keybinds_color, f_keybinds and keybinds_enabled)
+    ui.set_visible(UI.indicators_size, f_indicators and indicators_enabled)
+    ui.set_visible(UI.indicators_features, f_indicators and indicators_enabled)
+    ui.set_visible(UI.indicators_color, f_indicators and indicators_enabled)
+
+    -- the plain Misc extras only show on the landing (nothing focused)
+    local extras = is_misc and none
+    ui.set_visible(UI.miss_log, extras)
+    ui.set_visible(UI.first_person_nade, extras)
+    ui.set_visible(UI.warmup_divider, extras)
+    ui.set_visible(UI.warmup_warning, extras)
+    ui.set_visible(UI.warmup_helper, extras)
+
     local fps_boost_enabled = ui.get(UI.fps_boost)
-    ui.set_visible(UI.fps_boost, is_misc)
-    ui.set_visible(UI.fps_boost_options, is_misc and fps_boost_enabled)
-    
-    local show_clantag_opts = is_misc and clantag_enabled
+    ui.set_visible(UI.fps_boost, extras)
+    ui.set_visible(UI.fps_boost_options, extras and fps_boost_enabled)
+
+    local show_clantag_opts = f_clantag and clantag_enabled
     ui.set_visible(UI.clantag_style, show_clantag_opts)
 end
 
