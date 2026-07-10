@@ -338,6 +338,16 @@ UI.nav_back = ui.new_button("LUA", "A", "\aB9BEFFFF « \aFFFFFFFFBack", function
     if UI._update_visibility then UI._update_visibility() end
 end)
 
+-- rinnegan-style "Setup" rows for the Visuals features (grey = off, accent = on)
+UI.su_off = UI.su_off or {}
+UI.su_on  = UI.su_on or {}
+do
+    local names = {"Notifications", "Kill image", "Hit effect", "Healthbar", "Scope", "Tracers", "Trails", "Grenade trail"}
+    for _, nm in ipairs(names) do
+        UI.su_off[nm] = ui.new_button("LUA", "A", "\aC8C8C8C8 Setup " .. nm, function() UI.setup_jump(nm) end)
+        UI.su_on[nm]  = ui.new_button("LUA", "A", "\aB9BEFFFF Setup " .. nm, function() UI.setup_jump(nm) end)
+    end
+end
 UI.notifications = ui.new_checkbox("LUA", "A", "\aFFFFFFFF  Notifications")
 UI.notify_types = ui.new_multiselect("LUA", "A", "\aFFFFFFFF    Types", {
     "Hit", "Miss", "Hurt", "Death"
@@ -417,6 +427,14 @@ UI.grenade_trail_duration = ui.new_slider("LUA", "A", "\aFFFFFFFF    Duration\ng
 UI.grenade_trail_glow = ui.new_checkbox("LUA", "A", "\aFFFFFFFF    Glow\ngrenade_trail")
 UI.grenade_trail_glow_intensity = ui.new_slider("LUA", "A", "\aFFFFFFFF    Glow intensity\ngrenade_trail", 1, 5, 2)
 
+-- rinnegan-style "Setup" rows for the World features (grey = off, accent = on)
+do
+    local names = {"Fog", "Wall color", "Bloom", "Exposure", "Model brightness", "Smooth animation", "Smooth camera"}
+    for _, nm in ipairs(names) do
+        UI.su_off[nm] = ui.new_button("LUA", "A", "\aC8C8C8C8 Setup " .. nm, function() UI.setup_jump(nm) end)
+        UI.su_on[nm]  = ui.new_button("LUA", "A", "\aB9BEFFFF Setup " .. nm, function() UI.setup_jump(nm) end)
+    end
+end
 UI.fog = ui.new_checkbox("LUA", "A", "\aFFFFFFFF  Fog")
 UI.fog_color = ui.new_color_picker("LUA", "A", "\aFFFFFFFF  Fog", 255, 255, 255, 255)
 UI.fog_style = ui.new_combobox("LUA", "A", "\aFFFFFFFF    Style\nfog", {"Custom", "Rainbow"})
@@ -450,8 +468,13 @@ UI.smooth_camera_roll = ui.new_slider("LUA", "A", "\aFFFFFFFF    Camera roll", -
 -- Hidden state holding the focused feature (or "None"). Each "Setup <name>"
 -- button toggles the focus, and the Misc tab then shows ONLY that feature's
 -- settings (click again to collapse back to the list).
-UI.setup_focus = ui.new_combobox("LUA", "A", "\aFFFFFFFF  setup focus",
-    {"None", "Clantag", "Watermark", "Spectators", "Keybinds", "Indicators"})
+UI.setup_focus = ui.new_combobox("LUA", "A", "\aFFFFFFFF  setup focus", {
+    "None",
+    "Notifications", "Kill image", "Hit effect", "Healthbar", "Scope", "Tracers", "Trails", "Grenade trail",
+    "Fog", "Wall color", "Bloom", "Exposure", "Model brightness", "Smooth animation", "Smooth camera",
+    "Model changer", "Hit sound", "Death sound", "Viewmodel", "Console color", "Aspect ratio", "Thirdperson", "Skybox", "FOV override",
+    "Clantag", "Watermark", "Spectators", "Keybinds", "Indicators"
+})
 ui.set_visible(UI.setup_focus, false)
 UI.setup_jump = function(name)
     ui.set(UI.setup_focus, ui.get(UI.setup_focus) == name and "None" or name)
@@ -872,6 +895,14 @@ models.names_ct = get_model_names(models.ct_player)
 models.auto_names_t = get_model_names(models.auto_t)
 models.auto_names_ct = get_model_names(models.auto_ct)
 
+-- rinnegan-style "Setup" rows for the Changer features (grey = off, accent = on)
+do
+    local names = {"Model changer", "Hit sound", "Death sound", "Viewmodel", "Console color", "Aspect ratio", "Thirdperson", "Skybox", "FOV override"}
+    for _, nm in ipairs(names) do
+        UI.su_off[nm] = ui.new_button("LUA", "A", "\aC8C8C8C8 Setup " .. nm, function() UI.setup_jump(nm) end)
+        UI.su_on[nm]  = ui.new_button("LUA", "A", "\aB9BEFFFF Setup " .. nm, function() UI.setup_jump(nm) end)
+    end
+end
 UI.model_changer = ui.new_checkbox("LUA", "A", "\aFFFFFFFF  Model changer")
 UI.model_changer_mode = ui.new_combobox("LUA", "A", "\aFFFFFFFF    Mode", {"Manual", "Auto"})
 UI.model_changer_ct = ui.new_combobox("LUA", "A", "\aFFFFFFFF    CT Model", models.names_ct)
@@ -998,59 +1029,84 @@ end
 local function update_visibility_changer()
     local enabled = ui.get(UI.enabled) and ui.get(UI.nav_open)
     local is_changer = enabled and ui.get(UI.tab) == "Changer"
-    
-    ui.set_visible(UI.model_changer, is_changer)
-    
+    local focus = ui.get(UI.setup_focus)
+
+    -- "Setup <name>" rows for every Changer feature (grey when off, accent when on)
+    local function row(nm, ref)
+        local on = ui.get(ref)
+        ui.set_visible(UI.su_on[nm], is_changer and on)
+        ui.set_visible(UI.su_off[nm], is_changer and not on)
+    end
+    row("Model changer", UI.model_changer)
+    row("Hit sound", UI.hit_sound)
+    row("Death sound", UI.death_sound)
+    row("Viewmodel", UI.viewmodel_changer)
+    row("Console color", UI.console_color)
+    row("Aspect ratio", UI.aspect_ratio_enabled)
+    row("Thirdperson", UI.thirdperson_distance)
+    row("Skybox", UI.skybox)
+    row("FOV override", UI.fov_override_enabled)
+
+    local f_model = is_changer and focus == "Model changer"
+    ui.set_visible(UI.model_changer, f_model)
     local model_changer_enabled = ui.get(UI.model_changer)
     local model_mode = ui.get(UI.model_changer_mode)
-    ui.set_visible(UI.model_changer_mode, is_changer and model_changer_enabled)
-    ui.set_visible(UI.model_changer_ct, is_changer and model_changer_enabled and model_mode == "Manual")
-    ui.set_visible(UI.model_changer_t, is_changer and model_changer_enabled and model_mode == "Manual")
-    ui.set_visible(UI.model_changer_ct_auto, is_changer and model_changer_enabled and model_mode == "Auto")
-    ui.set_visible(UI.model_changer_t_auto, is_changer and model_changer_enabled and model_mode == "Auto")
-    
-    ui.set_visible(UI.hit_sound, is_changer)
+    ui.set_visible(UI.model_changer_mode, f_model and model_changer_enabled)
+    ui.set_visible(UI.model_changer_ct, f_model and model_changer_enabled and model_mode == "Manual")
+    ui.set_visible(UI.model_changer_t, f_model and model_changer_enabled and model_mode == "Manual")
+    ui.set_visible(UI.model_changer_ct_auto, f_model and model_changer_enabled and model_mode == "Auto")
+    ui.set_visible(UI.model_changer_t_auto, f_model and model_changer_enabled and model_mode == "Auto")
+
+    local f_hitsound = is_changer and focus == "Hit sound"
+    ui.set_visible(UI.hit_sound, f_hitsound)
     local hit_sound_enabled = ui.get(UI.hit_sound)
-    ui.set_visible(UI.hit_sound_head, is_changer and hit_sound_enabled)
-    ui.set_visible(UI.hit_sound_body, is_changer and hit_sound_enabled)
-    ui.set_visible(UI.hit_sound_volume, is_changer and hit_sound_enabled)
-    
-    ui.set_visible(UI.death_sound, is_changer)
+    ui.set_visible(UI.hit_sound_head, f_hitsound and hit_sound_enabled)
+    ui.set_visible(UI.hit_sound_body, f_hitsound and hit_sound_enabled)
+    ui.set_visible(UI.hit_sound_volume, f_hitsound and hit_sound_enabled)
+
+    local f_deathsound = is_changer and focus == "Death sound"
+    ui.set_visible(UI.death_sound, f_deathsound)
     local death_sound_enabled = ui.get(UI.death_sound)
-    ui.set_visible(UI.death_sound_select, is_changer and death_sound_enabled)
-    ui.set_visible(UI.death_sound_volume, is_changer and death_sound_enabled)
-    
-    ui.set_visible(UI.viewmodel_changer, is_changer)
+    ui.set_visible(UI.death_sound_select, f_deathsound and death_sound_enabled)
+    ui.set_visible(UI.death_sound_volume, f_deathsound and death_sound_enabled)
+
+    local f_viewmodel = is_changer and focus == "Viewmodel"
+    ui.set_visible(UI.viewmodel_changer, f_viewmodel)
     local viewmodel_enabled = ui.get(UI.viewmodel_changer)
-    ui.set_visible(UI.viewmodel_fov, is_changer and viewmodel_enabled)
-    ui.set_visible(UI.viewmodel_x, is_changer and viewmodel_enabled)
-    ui.set_visible(UI.viewmodel_y, is_changer and viewmodel_enabled)
-    ui.set_visible(UI.viewmodel_z, is_changer and viewmodel_enabled)
-    
-    ui.set_visible(UI.console_color, is_changer)
-    ui.set_visible(UI.console_color_picker, is_changer and ui.get(UI.console_color))
-    
-    ui.set_visible(UI.aspect_ratio_enabled, is_changer)
+    ui.set_visible(UI.viewmodel_fov, f_viewmodel and viewmodel_enabled)
+    ui.set_visible(UI.viewmodel_x, f_viewmodel and viewmodel_enabled)
+    ui.set_visible(UI.viewmodel_y, f_viewmodel and viewmodel_enabled)
+    ui.set_visible(UI.viewmodel_z, f_viewmodel and viewmodel_enabled)
+
+    local f_console = is_changer and focus == "Console color"
+    ui.set_visible(UI.console_color, f_console)
+    ui.set_visible(UI.console_color_picker, f_console and ui.get(UI.console_color))
+
+    local f_aspect = is_changer and focus == "Aspect ratio"
+    ui.set_visible(UI.aspect_ratio_enabled, f_aspect)
     local aspect_ratio_enabled = ui.get(UI.aspect_ratio_enabled)
-    ui.set_visible(UI.aspect_ratio, is_changer and aspect_ratio_enabled)
-    
-    ui.set_visible(UI.thirdperson_distance, is_changer)
+    ui.set_visible(UI.aspect_ratio, f_aspect and aspect_ratio_enabled)
+
+    local f_third = is_changer and focus == "Thirdperson"
+    ui.set_visible(UI.thirdperson_distance, f_third)
     local thirdperson_enabled = ui.get(UI.thirdperson_distance)
-    ui.set_visible(UI.thirdperson_distance_value, is_changer and thirdperson_enabled)
-    
-    ui.set_visible(UI.skybox, is_changer)
+    ui.set_visible(UI.thirdperson_distance_value, f_third and thirdperson_enabled)
+
+    local f_skybox = is_changer and focus == "Skybox"
+    ui.set_visible(UI.skybox, f_skybox)
     local skybox_enabled = ui.get(UI.skybox)
     local skybox_style = ui.get(UI.skybox_style)
-    ui.set_visible(UI.skybox_list, is_changer and skybox_enabled)
-    ui.set_visible(UI.skybox_color, is_changer and skybox_enabled and skybox_style == "Custom")
-    ui.set_visible(UI.skybox_style, is_changer and skybox_enabled)
-    ui.set_visible(UI.skybox_brightness, is_changer and skybox_enabled)
-    ui.set_visible(UI.skybox_color_strength, is_changer and skybox_enabled)
-    ui.set_visible(UI.skybox_remove_3d, is_changer and skybox_enabled)
-    
-    ui.set_visible(UI.fov_override_enabled, is_changer)
+    ui.set_visible(UI.skybox_list, f_skybox and skybox_enabled)
+    ui.set_visible(UI.skybox_color, f_skybox and skybox_enabled and skybox_style == "Custom")
+    ui.set_visible(UI.skybox_style, f_skybox and skybox_enabled)
+    ui.set_visible(UI.skybox_brightness, f_skybox and skybox_enabled)
+    ui.set_visible(UI.skybox_color_strength, f_skybox and skybox_enabled)
+    ui.set_visible(UI.skybox_remove_3d, f_skybox and skybox_enabled)
+
+    local f_fov = is_changer and focus == "FOV override"
+    ui.set_visible(UI.fov_override_enabled, f_fov)
     local fov_override_enabled = ui.get(UI.fov_override_enabled)
-    ui.set_visible(UI.fov_override, is_changer and fov_override_enabled)
+    ui.set_visible(UI.fov_override, f_fov and fov_override_enabled)
 end
 
 local function update_visibility_trashtalk()
@@ -1125,28 +1181,47 @@ end
 local function update_visibility_visuals()
     local enabled = ui.get(UI.enabled) and ui.get(UI.nav_open)
     local is_visuals = enabled and ui.get(UI.tab) == "Visuals"
-    
-    ui.set_visible(UI.notifications, is_visuals)
+    local focus = ui.get(UI.setup_focus)
+
+    -- "Setup <name>" rows for every Visuals feature (grey when off, accent when on)
+    local function row(nm, ref)
+        local on = ui.get(ref)
+        ui.set_visible(UI.su_on[nm], is_visuals and on)
+        ui.set_visible(UI.su_off[nm], is_visuals and not on)
+    end
+    row("Notifications", UI.notifications)
+    row("Kill image", UI.kill_image)
+    row("Hit effect", UI.hit_effect)
+    row("Healthbar", UI.healthbar)
+    row("Scope", UI.scope)
+    row("Tracers", UI.tracers)
+    row("Trails", UI.trails)
+    row("Grenade trail", UI.grenade_trail)
+
+    local f_notifications = is_visuals and focus == "Notifications"
+    ui.set_visible(UI.notifications, f_notifications)
     local notif_enabled = ui.get(UI.notifications)
-    local show_notify_opts = is_visuals and notif_enabled
+    local show_notify_opts = f_notifications and notif_enabled
     ui.set_visible(UI.notify_types, show_notify_opts)
     ui.set_visible(UI.notify_style, show_notify_opts)
     ui.set_visible(UI.notify_size, show_notify_opts)
     ui.set_visible(UI.notify_limit, show_notify_opts)
     ui.set_visible(UI.notify_duration, show_notify_opts)
-    
-    ui.set_visible(UI.kill_image, is_visuals)
+
+    local f_kill = is_visuals and focus == "Kill image"
+    ui.set_visible(UI.kill_image, f_kill)
     local kill_image_enabled = ui.get(UI.kill_image)
-    local show_kill_image_opts = is_visuals and kill_image_enabled
+    local show_kill_image_opts = f_kill and kill_image_enabled
     ui.set_visible(UI.kill_image_select, show_kill_image_opts)
     ui.set_visible(UI.kill_image_alpha, show_kill_image_opts)
     ui.set_visible(UI.kill_image_duration, show_kill_image_opts)
     ui.set_visible(UI.kill_image_no_repeat, show_kill_image_opts)
     ui.set_visible(UI.kill_image_size, show_kill_image_opts)
-    
-    ui.set_visible(UI.healthbar, is_visuals)
+
+    local f_healthbar = is_visuals and focus == "Healthbar"
+    ui.set_visible(UI.healthbar, f_healthbar)
     local healthbar_enabled = ui.get(UI.healthbar)
-    local show_healthbar_opts = is_visuals and healthbar_enabled
+    local show_healthbar_opts = f_healthbar and healthbar_enabled
     local healthbar_style = ui.get(UI.healthbar_style)
     ui.set_visible(UI.healthbar_color_full, show_healthbar_opts)
     ui.set_visible(UI.healthbar_color_empty, show_healthbar_opts and healthbar_style == "Gradient")
@@ -1157,9 +1232,10 @@ local function update_visibility_hit_effect()
     local enabled = ui.get(UI.enabled) and ui.get(UI.nav_open)
     local is_visuals = enabled and ui.get(UI.tab) == "Visuals"
     
-    ui.set_visible(UI.hit_effect, is_visuals)
-    ui.set_visible(UI.hit_effect_color, is_visuals)
-    local show_hit_effect_opts = is_visuals and ui.get(UI.hit_effect)
+    local f_hit = is_visuals and ui.get(UI.setup_focus) == "Hit effect"
+    ui.set_visible(UI.hit_effect, f_hit)
+    ui.set_visible(UI.hit_effect_color, f_hit)
+    local show_hit_effect_opts = f_hit and ui.get(UI.hit_effect)
     ui.set_visible(UI.hit_effect_style, show_hit_effect_opts)
     local hit_style = ui.get(UI.hit_effect_style)
     ui.set_visible(UI.hit_effect_color2, show_hit_effect_opts and (hit_style == "2-color" or hit_style == "3-color"))
@@ -1178,12 +1254,13 @@ local function update_visibility_fog_scope()
     local enabled = ui.get(UI.enabled) and ui.get(UI.nav_open)
     local is_visuals = enabled and ui.get(UI.tab) == "Visuals"
     
-    ui.set_visible(UI.scope, is_visuals)
-    ui.set_visible(UI.scope_color, is_visuals)
+    local f_scope = is_visuals and ui.get(UI.setup_focus) == "Scope"
+    ui.set_visible(UI.scope, f_scope)
+    ui.set_visible(UI.scope_color, f_scope)
     local scope_enabled = ui.get(UI.scope)
-    local show_scope_opts = is_visuals and scope_enabled
+    local show_scope_opts = f_scope and scope_enabled
     local scope_style_val = ui.get(UI.scope_style)
-    ui.set_visible(UI.scope_color, is_visuals and scope_style_val ~= "Rainbow")
+    ui.set_visible(UI.scope_color, f_scope and scope_style_val ~= "Rainbow")
     ui.set_visible(UI.scope_style, show_scope_opts)
     ui.set_visible(UI.scope_color2, show_scope_opts and scope_style_val == "Dual color")
     ui.set_visible(UI.scope_thickness, show_scope_opts)
@@ -1198,10 +1275,12 @@ local function update_visibility_tracers_trails()
     local enabled = ui.get(UI.enabled) and ui.get(UI.nav_open)
     local is_visuals = enabled and ui.get(UI.tab) == "Visuals"
     
-    ui.set_visible(UI.tracers, is_visuals)
-    ui.set_visible(UI.tracers_color, is_visuals)
+    local focus = ui.get(UI.setup_focus)
+    local f_tracers = is_visuals and focus == "Tracers"
+    ui.set_visible(UI.tracers, f_tracers)
+    ui.set_visible(UI.tracers_color, f_tracers)
     local tracers_enabled = ui.get(UI.tracers)
-    local show_tracers_opts = is_visuals and tracers_enabled
+    local show_tracers_opts = f_tracers and tracers_enabled
     ui.set_visible(UI.tracers_style, show_tracers_opts)
     ui.set_visible(UI.tracers_color2, show_tracers_opts and (ui.get(UI.tracers_style) == "Gradient"))
     ui.set_visible(UI.tracers_duration, show_tracers_opts)
@@ -1211,9 +1290,10 @@ local function update_visibility_tracers_trails()
     ui.set_visible(UI.tracers_anim, show_tracers_opts)
     ui.set_visible(UI.tracers_limit, show_tracers_opts)
     
-    ui.set_visible(UI.trails, is_visuals)
-    ui.set_visible(UI.trails_color, is_visuals)
-    local show_trails_opts = is_visuals and ui.get(UI.trails)
+    local f_trails = is_visuals and focus == "Trails"
+    ui.set_visible(UI.trails, f_trails)
+    ui.set_visible(UI.trails_color, f_trails)
+    local show_trails_opts = f_trails and ui.get(UI.trails)
     ui.set_visible(UI.trails_style, show_trails_opts)
     ui.set_visible(UI.trails_color2, show_trails_opts and (ui.get(UI.trails_style) == "Gradient"))
     ui.set_visible(UI.trails_duration, show_trails_opts)
@@ -1222,9 +1302,10 @@ local function update_visibility_tracers_trails()
     ui.set_visible(UI.trails_glow_thickness, show_trails_opts and ui.get(UI.trails_glow))
     ui.set_visible(UI.trails_anim, show_trails_opts)
     
-    ui.set_visible(UI.grenade_trail, is_visuals)
-    ui.set_visible(UI.grenade_trail_color, is_visuals)
-    local show_grenade_trail_opts = is_visuals and ui.get(UI.grenade_trail)
+    local f_grenade = is_visuals and focus == "Grenade trail"
+    ui.set_visible(UI.grenade_trail, f_grenade)
+    ui.set_visible(UI.grenade_trail_color, f_grenade)
+    local show_grenade_trail_opts = f_grenade and ui.get(UI.grenade_trail)
     ui.set_visible(UI.grenade_trail_style, show_grenade_trail_opts)
     ui.set_visible(UI.grenade_trail_color2, show_grenade_trail_opts and ui.get(UI.grenade_trail_style) == "Gradient")
     ui.set_visible(UI.grenade_trail_thickness, show_grenade_trail_opts)
@@ -1328,49 +1409,71 @@ end
 local function update_visibility_world()
     local enabled = ui.get(UI.enabled) and ui.get(UI.nav_open)
     local is_world = enabled and ui.get(UI.tab) == "World"
-    
-    ui.set_visible(UI.fog, is_world)
-    ui.set_visible(UI.fog_color, is_world)
+    local focus = ui.get(UI.setup_focus)
+
+    -- "Setup <name>" rows for every World feature (grey when off, accent when on)
+    local function row(nm, ref)
+        local on = ui.get(ref)
+        ui.set_visible(UI.su_on[nm], is_world and on)
+        ui.set_visible(UI.su_off[nm], is_world and not on)
+    end
+    row("Fog", UI.fog)
+    row("Wall color", UI.wall_color)
+    row("Bloom", UI.bloom)
+    row("Exposure", UI.exposure)
+    row("Model brightness", UI.model_brightness)
+    row("Smooth animation", UI.smooth_animation)
+    row("Smooth camera", UI.smooth_camera)
+
+    local f_fog = is_world and focus == "Fog"
+    ui.set_visible(UI.fog, f_fog)
+    ui.set_visible(UI.fog_color, f_fog)
     local fog_enabled = ui.get(UI.fog)
-    local show_fog_opts = is_world and fog_enabled
+    local show_fog_opts = f_fog and fog_enabled
     local fog_is_rainbow = ui.get(UI.fog_style) == "Rainbow"
-    ui.set_visible(UI.fog_color, is_world and fog_enabled and not fog_is_rainbow)
+    ui.set_visible(UI.fog_color, f_fog and fog_enabled and not fog_is_rainbow)
     ui.set_visible(UI.fog_style, show_fog_opts)
     ui.set_visible(UI.fog_start, show_fog_opts)
     ui.set_visible(UI.fog_end, show_fog_opts)
     ui.set_visible(UI.fog_density, show_fog_opts)
     ui.set_visible(UI.fog_rainbow_speed, show_fog_opts and fog_is_rainbow)
-    
-    ui.set_visible(UI.wall_color, is_world)
+
+    local f_wall = is_world and focus == "Wall color"
+    ui.set_visible(UI.wall_color, f_wall)
     local wall_color_enabled = ui.get(UI.wall_color)
     local wall_color_style = ui.get(UI.wall_color_style)
-    ui.set_visible(UI.wall_color_picker, is_world and wall_color_enabled)
-    ui.set_visible(UI.wall_color_style, is_world and wall_color_enabled)
-    ui.set_visible(UI.wall_color_picker2, is_world and wall_color_enabled and wall_color_style == "Gradient")
-    
-    ui.set_visible(UI.bloom, is_world)
-    ui.set_visible(UI.bloom_scale, is_world and ui.get(UI.bloom))
-    
-    ui.set_visible(UI.exposure, is_world)
-    ui.set_visible(UI.exposure_value, is_world and ui.get(UI.exposure))
-    
-    ui.set_visible(UI.model_brightness, is_world)
-    ui.set_visible(UI.model_brightness_value, is_world and ui.get(UI.model_brightness))
-    
-    ui.set_visible(UI.smooth_animation, is_world)
-    
-    ui.set_visible(UI.smooth_camera, is_world)
+    ui.set_visible(UI.wall_color_picker, f_wall and wall_color_enabled)
+    ui.set_visible(UI.wall_color_style, f_wall and wall_color_enabled)
+    ui.set_visible(UI.wall_color_picker2, f_wall and wall_color_enabled and wall_color_style == "Gradient")
+
+    local f_bloom = is_world and focus == "Bloom"
+    ui.set_visible(UI.bloom, f_bloom)
+    ui.set_visible(UI.bloom_scale, f_bloom and ui.get(UI.bloom))
+
+    local f_exposure = is_world and focus == "Exposure"
+    ui.set_visible(UI.exposure, f_exposure)
+    ui.set_visible(UI.exposure_value, f_exposure and ui.get(UI.exposure))
+
+    local f_modelbright = is_world and focus == "Model brightness"
+    ui.set_visible(UI.model_brightness, f_modelbright)
+    ui.set_visible(UI.model_brightness_value, f_modelbright and ui.get(UI.model_brightness))
+
+    local f_smoothanim = is_world and focus == "Smooth animation"
+    ui.set_visible(UI.smooth_animation, f_smoothanim)
+
+    local f_smoothcam = is_world and focus == "Smooth camera"
+    ui.set_visible(UI.smooth_camera, f_smoothcam)
     local smooth_camera_enabled = ui.get(UI.smooth_camera)
-    ui.set_visible(UI.smooth_camera_pitch_speed, is_world and smooth_camera_enabled)
-    ui.set_visible(UI.smooth_camera_yaw_speed, is_world and smooth_camera_enabled)
-    ui.set_visible(UI.smooth_camera_extrapolation, is_world and smooth_camera_enabled)
-    ui.set_visible(UI.smooth_camera_velocity_filter, is_world and smooth_camera_enabled)
-    ui.set_visible(UI.smooth_camera_prediction_clamp, is_world and smooth_camera_enabled)
-    ui.set_visible(UI.smooth_camera_easing, is_world and smooth_camera_enabled)
-    ui.set_visible(UI.smooth_camera_dynamic_fov, is_world and smooth_camera_enabled)
+    ui.set_visible(UI.smooth_camera_pitch_speed, f_smoothcam and smooth_camera_enabled)
+    ui.set_visible(UI.smooth_camera_yaw_speed, f_smoothcam and smooth_camera_enabled)
+    ui.set_visible(UI.smooth_camera_extrapolation, f_smoothcam and smooth_camera_enabled)
+    ui.set_visible(UI.smooth_camera_velocity_filter, f_smoothcam and smooth_camera_enabled)
+    ui.set_visible(UI.smooth_camera_prediction_clamp, f_smoothcam and smooth_camera_enabled)
+    ui.set_visible(UI.smooth_camera_easing, f_smoothcam and smooth_camera_enabled)
+    ui.set_visible(UI.smooth_camera_dynamic_fov, f_smoothcam and smooth_camera_enabled)
     local dynamic_fov_enabled = ui.get(UI.smooth_camera_dynamic_fov)
-    ui.set_visible(UI.smooth_camera_fov_intensity, is_world and smooth_camera_enabled and dynamic_fov_enabled)
-    ui.set_visible(UI.smooth_camera_roll, is_world and smooth_camera_enabled)
+    ui.set_visible(UI.smooth_camera_fov_intensity, f_smoothcam and smooth_camera_enabled and dynamic_fov_enabled)
+    ui.set_visible(UI.smooth_camera_roll, f_smoothcam and smooth_camera_enabled)
 end
 
 local function update_visibility()
