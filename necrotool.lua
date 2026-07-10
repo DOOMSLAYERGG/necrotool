@@ -1890,289 +1890,119 @@ end
 
 local rainbow_hue = 0
 
+-- ===== startup intro image =====
+-- Downloads content/intro.png from GitHub into csgo/materials
+-- (…\csgo legacy\csgo\materials) and shows it as the intro. The image is drawn
+-- at its native pixel size (only downscaled if it would not fit the screen,
+-- never upscaled) so it is never degraded in quality.
 local intro_animation = {
-    active = true,
-    start_time = globals.realtime(),
-    duration = 5.5,
-    particles = {},
-    letters = {},
-    rings = {}
+    active     = true,
+    spawn      = globals.realtime(),  -- when the script loaded (download timeout)
+    start_time = nil,                 -- set once the image is decoded and ready
+    duration   = 3.0,
+    image      = nil,
+    img_w      = 0,
+    img_h      = 0
 }
 
-local function init_intro_letters()
-    local text = "WinstonRED"
-    for i = 1, #text do
-        intro_animation.letters[i] = {
-            char = text:sub(i, i),
-            delay = (i - 1) * 0.1,
-            scale = 0,
-            rotation = 0,
-            offset_y = -100,
-            alpha = 0,
-            velocity_y = 0
-        }
+do
+    local http_ok, http = pcall(require, "gamesense/http")
+    if not http_ok then http = nil end
+
+    local INTRO_FILE = "intro.png"
+    -- writefile / readfile are rooted at the game root, so csgo/materials/<file>
+    -- maps to  ...\csgo legacy\csgo\materials\<file>
+    local INTRO_DISK = "csgo/materials/" .. INTRO_FILE
+    local INTRO_URL  = "https://raw.githubusercontent.com/DOOMSLAYERGG/necrotool/claude/necrotool-keybind-style-sbmkhz/content/" .. INTRO_FILE
+
+    local function set_image(bytes)
+        if not bytes or #bytes == 0 then
+            intro_animation.active = false
+            return
+        end
+        -- read the native resolution straight from the PNG IHDR header so we can
+        -- draw it 1:1 (no scaling -> no quality loss)
+        if #bytes >= 24 then
+            local function u32(o)
+                return bytes:byte(o) * 16777216 + bytes:byte(o + 1) * 65536
+                     + bytes:byte(o + 2) * 256 + bytes:byte(o + 3)
+            end
+            intro_animation.img_w = u32(17)
+            intro_animation.img_h = u32(21)
+        end
+        local ok, img = pcall(images.load_png, bytes)
+        if ok and img then
+            intro_animation.image = img
+            intro_animation.start_time = globals.realtime()
+        else
+            intro_animation.active = false
+        end
     end
-end
-init_intro_letters()
 
-local function create_intro_particle()
-    local screen_x, screen_y = client.screen_size()
-    local center_x, center_y = screen_x / 2, screen_y / 2
-    local angle = math.random(0, 360) * (math.pi / 180)
-    local dist = math.random(200, 500)
-    
-    return {
-        x = center_x + math.cos(angle) * dist,
-        y = center_y + math.sin(angle) * dist,
-        target_x = center_x + math.random(-80, 80),
-        target_y = center_y + math.random(-80, 80),
-        size = math.random(2, 6),
-        type = math.random(1, 4),
-        alpha = 0,
-        spawn_time = globals.realtime(),
-        delay = math.random(0, 15) * 0.05,
-        rotation = math.random(0, 360)
-    }
-end
-
-for i = 1, 50 do
-    table.insert(intro_animation.particles, create_intro_particle())
-end
-
-for i = 1, 3 do
-    intro_animation.rings[i] = {
-        radius = 0,
-        alpha = 0,
-        delay = i * 0.15
-    }
-end
-
-local function easeOutElastic(t)
-    if t == 0 or t == 1 then return t end
-    local p = 0.35
-    return math.pow(2, -10 * t) * math.sin((t - p / 4) * (2 * math.pi) / p) + 1
-end
-
-local function easeOutBack(t)
-    local s = 1.70158
-    t = t - 1
-    return t * t * ((s + 1) * t + s) + 1
-end
-
-local function easeInOutCubic(t)
-    if t < 0.5 then
-        return 4 * t * t * t
+    local ok, data = pcall(readfile, INTRO_DISK)
+    if ok and data and #data > 0 then
+        set_image(data)                                 -- already on disk
+    elseif http then
+        http.get(INTRO_URL, function(success, response)
+            if success and response and response.body and #response.body > 0
+                and (response.status == nil or response.status == 200) then
+                pcall(writefile, INTRO_DISK, response.body)
+                set_image(response.body)
+            else
+                intro_animation.active = false
+            end
+        end)
     else
-        return 1 - math.pow(-2 * t + 2, 3) / 2
+        intro_animation.active = false                  -- no http library, nothing to show
     end
 end
 
 local function draw_intro_animation()
     if not intro_animation.active then return end
-    
-    local cur_time = globals.realtime()
-    local elapsed = cur_time - intro_animation.start_time
-    
+
+    -- still downloading / decoding: wait, but never block paint forever
+    if not intro_animation.image or not intro_animation.start_time then
+        if globals.realtime() - intro_animation.spawn > 6.0 then
+            intro_animation.active = false
+        end
+        return
+    end
+
+    local elapsed = globals.realtime() - intro_animation.start_time
     if elapsed > intro_animation.duration then
         intro_animation.active = false
         return
     end
-    
+
     local screen_x, screen_y = client.screen_size()
-    local center_x, center_y = screen_x / 2, screen_y / 2
-    
-    local bg_alpha = 0
-    if elapsed < 0.6 then
-        bg_alpha = (elapsed / 0.6) * 230
-    elseif elapsed > 4.5 then
-        bg_alpha = ((intro_animation.duration - elapsed) / 1.0) * 230
-    else
-        bg_alpha = 230
-    end
-    renderer.rectangle(0, 0, screen_x, screen_y, 5, 3, 10, bg_alpha)
-    
-    local main_alpha = 255
+
+    -- fade in over 0.4s, fade out over the last 0.5s
+    local fade = 1
     if elapsed < 0.4 then
-        main_alpha = (elapsed / 0.4) * 255
-    elseif elapsed > 4.5 then
-        main_alpha = ((intro_animation.duration - elapsed) / 1.0) * 255
+        fade = elapsed / 0.4
+    elseif elapsed > intro_animation.duration - 0.5 then
+        fade = (intro_animation.duration - elapsed) / 0.5
     end
-    
-    for i = 1, #intro_animation.rings do
-        local ring = intro_animation.rings[i]
-        local ring_time = elapsed - ring.delay
-        
-        if ring_time > 0 and ring_time < 2.5 then
-            local progress = math.min(ring_time / 2.5, 1)
-            ring.radius = 150 * easeOutBack(progress)
-            ring.alpha = main_alpha * (1 - progress) * 0.3
-            
-            for j = 0, 360, 30 do
-                local angle = (j + cur_time * 50) * (math.pi / 180)
-                local x1 = center_x + math.cos(angle) * ring.radius
-                local y1 = center_y + math.sin(angle) * ring.radius
-                local x2 = center_x + math.cos(angle) * (ring.radius + 10)
-                local y2 = center_y + math.sin(angle) * (ring.radius + 10)
-                
-                renderer.line(x1, y1, x2, y2, 255, 255, 255, ring.alpha)
-            end
-        end
+    if fade < 0 then fade = 0 elseif fade > 1 then fade = 1 end
+
+    -- dark backdrop
+    renderer.rectangle(0, 0, screen_x, screen_y, 5, 3, 10, 220 * fade)
+
+    -- native size; downscale only if it wouldn't fit the screen, never upscale
+    local w, h = intro_animation.img_w, intro_animation.img_h
+    if w <= 0 or h <= 0 then w, h = 512, 512 end
+    local max_w, max_h = screen_x * 0.9, screen_y * 0.9
+    local scale = 1
+    if w > max_w or h > max_h then
+        scale = math.min(max_w / w, max_h / h)
     end
-    
-    for i = 1, #intro_animation.particles do
-        local p = intro_animation.particles[i]
-        local particle_time = elapsed - p.delay
-        
-        if particle_time > 0 then
-            local progress = math.min(particle_time / 2.0, 1)
-            local eased = easeOutBack(progress)
-            
-            p.x = p.x + (p.target_x - p.x) * 0.08
-            p.y = p.y + (p.target_y - p.y) * 0.08
-            p.alpha = main_alpha * eased * 0.7
-            p.rotation = p.rotation + 3
-            
-            if elapsed > 4.0 then
-                local fade_progress = (elapsed - 4.0) / 1.5
-                p.alpha = p.alpha * (1 - fade_progress)
-            end
-            
-            if p.type == 1 then
-                renderer.circle(p.x, p.y, 255, 255, 255, p.alpha * 0.9, p.size, 0, 1)
-                renderer.circle(p.x, p.y, 255, 255, 255, p.alpha * 0.4, p.size + 2, 0, 1)
-            elseif p.type == 2 then
-                renderer.text(p.x, p.y, 255, 255, 255, p.alpha, "c", 0, "✦")
-            elseif p.type == 3 then
-                renderer.text(p.x, p.y, 255, 255, 255, p.alpha, "c", 0, "♡")
-            else
-                renderer.text(p.x, p.y, 255, 255, 255, p.alpha * 0.8, "c", 0, "✧")
-            end
-        end
-    end
-    
-    local glow_pulse = math.abs(math.sin(cur_time * 2.5)) * 0.4 + 0.6
-    local glow_size = 120 * glow_pulse
-    renderer.circle(center_x, center_y, 255, 255, 255, main_alpha * 0.06, glow_size, 0, 1)
-    renderer.circle(center_x, center_y, 255, 255, 255, main_alpha * 0.1, glow_size * 0.7, 0, 1)
-    renderer.circle(center_x, center_y, 255, 255, 255, main_alpha * 0.08, glow_size * 0.4, 0, 1)
-    
-    local letter_spacing = 18
-    local total_width = #intro_animation.letters * letter_spacing
-    local start_x = center_x - total_width / 2
-    
-    for i, letter in ipairs(intro_animation.letters) do
-        local letter_time = elapsed - letter.delay
-        
-        if letter_time > 0 then
-            local progress = math.min(letter_time / 0.8, 1)
-            letter.scale = easeOutElastic(progress)
-            
-            if progress < 1 then
-                letter.velocity_y = letter.velocity_y + 0.5
-                letter.offset_y = letter.offset_y + letter.velocity_y
-                if letter.offset_y > 0 then
-                    letter.offset_y = 0
-                    letter.velocity_y = letter.velocity_y * -0.6
-                end
-            else
-                letter.offset_y = 0
-            end
-            
-            letter.alpha = main_alpha * math.min(progress * 2, 1)
-            
-            local float_offset = 0
-            if progress >= 1 and elapsed < 4.0 then
-                float_offset = math.sin(cur_time * 3 + i * 0.8) * 4
-            end
-            
-            local x = start_x + i * letter_spacing
-            local y = center_y + letter.offset_y + float_offset
-            
-            local scale_size = letter.scale * 1.2
-            
-            for j = 1, 2 do
-                local glow_offset = j * 1.5
-                renderer.text(x, y, 255, 255, 255, letter.alpha * 0.15 / j, "+c", 0, letter.char)
-            end
-            
-            renderer.text(x + 1, y + 1, 0, 0, 0, letter.alpha * 0.7, "+c", 0, letter.char)
-            
-            -- "Winston" белый (1-7), "RED" красный (8-10)
-            if i <= 7 then
-                renderer.text(x, y, 255, 255, 255, letter.alpha, "+c", 0, letter.char)
-            else
-                renderer.text(x, y, 255, 50, 50, letter.alpha, "+c", 0, letter.char)
-            end
-        end
-    end
-    
-    local subtitle_alpha = 0
-    if elapsed > 1.5 then
-        local sub_progress = math.min((elapsed - 1.5) / 0.6, 1)
-        local eased_sub = easeInOutCubic(sub_progress)
-        subtitle_alpha = main_alpha * eased_sub
-        
-        if elapsed > 4.5 then
-            subtitle_alpha = main_alpha * ((intro_animation.duration - elapsed) / 1.0)
-        end
-        
-        local sub_y = center_y + 40
-        local sub_wave = math.sin(cur_time * 2.5) * 3
-        
-        renderer.text(center_x + 1, sub_y + 1, 0, 0, 0, subtitle_alpha * 0.6, "c", 0, "")
-        
-        local sub_pulse = math.sin(cur_time * 3) * 0.15 + 0.85
-        local sub_r = math.floor(202 * sub_pulse)
-        local sub_g = math.floor(70 * sub_pulse)
-        local sub_b = math.floor(205 * sub_pulse)
-        
-        renderer.text(center_x, sub_y + sub_wave, 255, 255, 255, subtitle_alpha, "c", 0, "")
-        
-        local line_width = 70
-        local line_progress = math.min((elapsed - 1.7) / 0.5, 1)
-        local line_w = line_width * easeOutBack(line_progress)
-        
-        renderer.gradient(center_x - line_w / 2, sub_y - 10, line_w / 2, 2, 255, 255, 255, 0, 255, 255, 255, subtitle_alpha * 0.9, true)
-        renderer.gradient(center_x, sub_y - 10, line_w / 2, 2, 255, 255, 255, subtitle_alpha * 0.9, 255, 255, 255, 0, true)
-        
-        renderer.gradient(center_x - line_w / 2, sub_y - 8, line_w / 2, 1, 255, 255, 255, 0, 255, 255, 255, subtitle_alpha * 0.6, true)
-        renderer.gradient(center_x, sub_y - 8, line_w / 2, 1, 255, 255, 255, subtitle_alpha * 0.6, 255, 255, 255, 0, true)
-    end
-    
-    if elapsed > 0.8 and elapsed < 4.0 then
-        local sparkle_count = 8
-        for i = 1, sparkle_count do
-            local angle = (cur_time * 2 + i * (360 / sparkle_count)) * (math.pi / 180)
-            local dist = 90 + math.sin(cur_time * 3 + i) * 20
-            local sx = center_x + math.cos(angle) * dist
-            local sy = center_y + math.sin(angle) * dist
-            local sparkle_alpha = main_alpha * (0.5 + math.sin(cur_time * 6 + i) * 0.5)
-            
-            renderer.text(sx, sy, 255, 255, 255, sparkle_alpha, "c", 0, "✦")
-            
-            local trail_angle = angle - 0.3
-            local trail_x = center_x + math.cos(trail_angle) * (dist - 5)
-            local trail_y = center_y + math.sin(trail_angle) * (dist - 5)
-            renderer.text(trail_x, trail_y, 255, 200, 230, sparkle_alpha * 0.4, "c", 0, "✧")
-        end
-    end
-    
-    if elapsed > 2.0 and elapsed < 4.0 then
-        local heart_count = 12
-        for i = 1, heart_count do
-            local heart_time = (elapsed - 2.0 - i * 0.1)
-            if heart_time > 0 then
-                local progress = math.min(heart_time / 1.5, 1)
-                local angle = (i * (360 / heart_count)) * (math.pi / 180)
-                local dist = 60 + progress * 80
-                local hx = center_x + math.cos(angle) * dist
-                local hy = center_y + math.sin(angle) * dist
-                local heart_alpha = main_alpha * (1 - progress) * 0.6
-                
-                renderer.text(hx, hy, 255, 182, 220, heart_alpha, "c", 0, "♡")
-            end
-        end
-    end
+    local dw, dh = math.floor(w * scale + 0.5), math.floor(h * scale + 0.5)
+    local x = math.floor((screen_x - dw) / 2)
+    local y = math.floor((screen_y - dh) / 2)
+
+    pcall(function()
+        intro_animation.image:draw(x, y, dw, dh, 255, 255, 255, math.floor(255 * fade), false, "f")
+    end)
 end
 
 local c_entity = require 'gamesense/entity'
