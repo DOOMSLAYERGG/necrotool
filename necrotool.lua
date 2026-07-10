@@ -427,6 +427,8 @@ UI.watermark_name = ui.new_combobox("LUA", "A", "\aFFFFFFFF    Name", {"necropto
 UI.watermark_style = ui.new_combobox("LUA", "A", "\aFFFFFFFF    Style\nwatermark", {"Lavender", "Windows", "Black", "Pink"})
 UI.watermark_color = ui.new_color_picker("LUA", "A", "\aFFFFFFFF    Border color\nwatermark", 255, 255, 255, 255)
 UI.watermark_avatar = ui.new_checkbox("LUA", "A", "\aFFFFFFFF    Steam avatar")
+UI.watermark_setup = ui.new_checkbox("LUA", "A", "\aFFFFFFFF    Show setup watermark")
+UI.watermark_setup_elems = ui.new_multiselect("LUA", "A", "\aFFFFFFFF      Setup elements", {"FPS", "Ping", "Loss", "Var", "Timeout"})
 UI.spectators = ui.new_checkbox("LUA", "A", "\aFFFFFFFF  Spectators")
 UI.spectators_size = ui.new_combobox("LUA", "A", "\aFFFFFFFF    Size\nspectators", {"Small", "Medium"})
 UI.spectators_style = ui.new_combobox("LUA", "A", "\aFFFFFFFF    Style\nspectators", {"Classic"})
@@ -1198,6 +1200,8 @@ local function update_visibility_misc()
     ui.set_visible(UI.watermark_style, is_misc and watermark_enabled)
     ui.set_visible(UI.watermark_color, is_misc and watermark_enabled)
     ui.set_visible(UI.watermark_avatar, is_misc and watermark_enabled)
+    ui.set_visible(UI.watermark_setup, is_misc and watermark_enabled)
+    ui.set_visible(UI.watermark_setup_elems, is_misc and watermark_enabled and ui.get(UI.watermark_setup))
     ui.set_visible(UI.spectators_size, is_misc and spectators_enabled)
     ui.set_visible(UI.spectators_style, is_misc and spectators_enabled)
     ui.set_visible(UI.spectators_anim, is_misc and spectators_enabled)
@@ -1293,6 +1297,7 @@ ui.set_callback(UI.healthbar, update_visibility)
 ui.set_callback(UI.healthbar_style, update_visibility)
 ui.set_callback(UI.clantag, update_visibility)
 ui.set_callback(UI.watermark, update_visibility)
+ui.set_callback(UI.watermark_setup, update_visibility)
 ui.set_callback(UI.death_sound, update_visibility)
 ui.set_callback(UI.kill_image, update_visibility)
 ui.set_callback(UI.hit_effect, update_visibility)
@@ -2952,9 +2957,17 @@ local function draw_watermark()
     
     local uwu_text = ui.get(UI.watermark_name)
     local info_text = string.format(" | %s%s", time_str, latency_str)
-    
+
+    -- setup watermark: append connection / performance stats (EmberLash port).
+    -- Built before measuring so every style's box sizes to include it.
+    local setup_tail = ""
+    if ui.get(UI.watermark_setup) then
+        setup_tail = UI.setup.build(ui.get(UI.watermark_setup_elems))
+        info_text = info_text .. setup_tail
+    end
+
     local screen_x, screen_y = client.screen_size()
-    
+
     local uwu_w, uwu_h = renderer.measure_text("b", uwu_text)
     local info_w, info_h = renderer.measure_text("", info_text)
     
@@ -2992,6 +3005,7 @@ local function draw_watermark()
             .. UI.lav.colour(suffix, P_R, P_G, P_B)
             .. " | " .. UI.lav.colour(time_str, P_R, P_G, P_B)
             .. latency_str
+            .. setup_tail
 
         local mw, mh = renderer.measure_text("", lav_str)
         local lav_w = mw + 10
@@ -4462,6 +4476,121 @@ function UI.avatar.draw_box(style, wm_left, box_y, box_h, r, g, b, alpha)
 
     -- the avatar itself (guarded: renderer.texture may vary across builds)
     pcall(renderer.texture, UI.avatar.tex, x + pad, y + pad, size - pad * 2, size - pad * 2, 255, 255, 255, alpha, "f")
+end
+
+-- ===== Setup watermark (EmberLash port): connection / performance stats =====
+-- Appends FPS / Ping / Loss / Var / Timeout to the watermark text so it renders
+-- across every watermark style. Lives on UI, so no new chunk-level locals.
+UI.setup = {
+    fps_smooth = 0,
+    to = { active = false, start = nil, grace = nil, duration = 0 }
+}
+
+-- bind engine net-channel once (guarded); unavailable APIs simply zero the stats
+UI.setup._net_ok = pcall(function()
+    -- VEngineClient014::GetNetChannelInfo (vtable index 78) -> INetChannelInfo*
+    UI.setup._get_nci = vmt_bind("engine.dll", "VEngineClient014", 78, "void*(__thiscall*)(void*)")
+
+    local avgloss_t = ffi.typeof("float(__thiscall*)(void*, int)")
+    UI.setup._avgloss = function(nc, flow)
+        return ffi.cast(avgloss_t, (ffi.cast("void***", nc)[0])[11])(nc, flow)
+    end
+
+    local framerate_t = ffi.typeof("void(__thiscall*)(void*, float*, float*, float*)")
+    UI.setup._framerate = function(nc, a, b, c)
+        return ffi.cast(framerate_t, (ffi.cast("void***", nc)[0])[25])(nc, a, b, c)
+    end
+end)
+
+function UI.setup.get_fps()
+    local raw = 1 / math.max(globals.frametime(), 0.0001)
+    UI.setup.fps_smooth = UI.setup.fps_smooth * 0.9 + raw * 0.1
+    return math.floor(UI.setup.fps_smooth + 0.5)
+end
+
+function UI.setup.get_ping()
+    return math.floor(client.latency() * 1000)
+end
+
+function UI.setup.get_loss()
+    if not UI.setup._net_ok then return 0 end
+    local v = 0
+    pcall(function()
+        local nc = UI.setup._get_nci()
+        if nc == nil then return end
+        local out = UI.setup._avgloss(nc, 0) or 0
+        local inc = UI.setup._avgloss(nc, 1) or 0
+        v = math.floor((inc + out) * 100)
+    end)
+    return v
+end
+
+function UI.setup.get_var()
+    if not UI.setup._net_ok then return 0 end
+    local v = 0
+    pcall(function()
+        local nc = UI.setup._get_nci()
+        if nc == nil then return end
+        local ft, ftd, fsd = ffi.new("float[1]"), ffi.new("float[1]"), ffi.new("float[1]")
+        UI.setup._framerate(nc, ft, ftd, fsd)
+        v = math.floor(ftd[0] * 1000)
+    end)
+    return v
+end
+
+function UI.setup.is_timeout()
+    local ok, res = pcall(function()
+        local ack     = globals.commandack()
+        local last_o  = globals.lastoutgoingcommand()
+        local choke   = globals.chokedcommands()
+        local frozen  = globals.servertickcount()
+        local score = 0
+        if (last_o - ack) > 48 then score = score + 1 end
+        if frozen == 0 then score = score + 2 end
+        if choke > 20 then score = score + 1 end
+        return score >= 3
+    end)
+    return ok and res or false
+end
+
+function UI.setup.get_timeout()
+    local now = globals.realtime()
+    local to = UI.setup.to
+    if UI.setup.is_timeout() then
+        if not to.grace then to.grace = now end
+        if now - to.grace > 0.5 then
+            if not to.active then to.active = true; to.start = now end
+            to.duration = now - to.start
+        end
+    else
+        to.active = false
+        to.start = nil
+        to.duration = 0
+        to.grace = nil
+    end
+    return to.duration or 0
+end
+
+-- build the plain-text stats tail (single colour, matches the watermark info text)
+function UI.setup.build(selected)
+    if not selected then return "" end
+
+    local function has(name)
+        for _, v in ipairs(selected) do
+            if v == name then return true end
+        end
+        return false
+    end
+
+    local parts = {}
+    if has("FPS")     then parts[#parts + 1] = tostring(UI.setup.get_fps()) .. " FPS" end
+    if has("Ping")    then parts[#parts + 1] = tostring(UI.setup.get_ping()) .. " MS" end
+    if has("Loss")    then parts[#parts + 1] = tostring(UI.setup.get_loss()) .. "% LOSS" end
+    if has("Var")     then parts[#parts + 1] = tostring(UI.setup.get_var()) .. " VAR" end
+    if has("Timeout") then parts[#parts + 1] = string.format("%.1fs TIMEOUT", UI.setup.get_timeout()) end
+
+    if #parts == 0 then return "" end
+    return " | " .. table.concat(parts, " | ")
 end
 
 local function draw_keybinds()
