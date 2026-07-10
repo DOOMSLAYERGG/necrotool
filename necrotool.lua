@@ -1992,8 +1992,8 @@ local function draw_intro_animation()
     -- so it always downscales (never upscales -> no quality loss)
     local w, h = intro_animation.img_w, intro_animation.img_h
     if w <= 0 or h <= 0 then w, h = 512, 512 end
-    local max_w, max_h = screen_x * 0.72, screen_y * 0.72
-    local scale = math.min(max_w / w, max_h / h, 0.85)
+    local max_w, max_h = screen_x * 0.432, screen_y * 0.432
+    local scale = math.min(max_w / w, max_h / h, 0.51)
     local dw, dh = math.floor(w * scale + 0.5), math.floor(h * scale + 0.5)
     local x = math.floor((screen_x - dw) / 2)
     local y = math.floor((screen_y - dh) / 2)
