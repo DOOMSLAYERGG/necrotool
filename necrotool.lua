@@ -1998,24 +1998,41 @@ local function draw_intro_animation()
     local x = math.floor((screen_x - dw) / 2)
     local y = math.floor((screen_y - dh) / 2)
 
-    -- soft glow derived from intro.png's colour palette (purple-leaning average
-    -- of the image: avg ~203,151,216 / vibrant ~172,62,228 -> soft vivid purple).
-    -- Drawn as fading concentric rings so it reads as a smooth halo.
-    local GR, GG, GB = 188, 104, 228
-    local glow_layers = 26
-    local glow_spread = 2.6
-    local glow_th = glow_spread + 1.5
+    -- animated soft glow hugging the image border, colour taken from intro.png's
+    -- palette. It "breathes" (pulsing intensity/spread) and gently shimmers
+    -- between the image's two palette purples (vibrant 172,62,228 <-> lavender
+    -- 203,151,216).
+    local gtime = globals.realtime()
+    local pulse = 0.5 + 0.5 * math.sin(gtime * 3.0)          -- breathing 0..1
+    local mix   = 0.5 + 0.5 * math.sin(gtime * 1.4)          -- colour shimmer 0..1
+    local GR = math.floor(172 + (203 - 172) * mix)
+    local GG = math.floor( 62 + (151 -  62) * mix)
+    local GB = math.floor(228 + (216 - 228) * mix)
+
+    -- tight soft halo: short spread (~14px max) with a quadratic falloff so most
+    -- of the brightness sits right against the border
+    local glow_layers = 12
+    local glow_spread = 1.15 + 0.35 * pulse                  -- spread breathes a touch
+    local glow_th = glow_spread + 1.3
+    local halo_a = (58 + 62 * pulse) * fade                  -- intensity breathes
     for i = glow_layers, 1, -1 do
         local s = i * glow_spread
         local t = i / glow_layers
-        local a = 72 * (1 - t) * (1 - t) * fade   -- soft outward falloff
+        local a = halo_a * (1 - t) * (1 - t)
         local rx, ry = x - s, y - s
         local rw, rh = dw + s * 2, dh + s * 2
-        renderer.rectangle(rx, ry, rw, glow_th, GR, GG, GB, a)                       -- top
-        renderer.rectangle(rx, ry + rh - glow_th, rw, glow_th, GR, GG, GB, a)        -- bottom
-        renderer.rectangle(rx, ry + glow_th, glow_th, rh - glow_th * 2, GR, GG, GB, a)          -- left
+        renderer.rectangle(rx, ry, rw, glow_th, GR, GG, GB, a)                                   -- top
+        renderer.rectangle(rx, ry + rh - glow_th, rw, glow_th, GR, GG, GB, a)                    -- bottom
+        renderer.rectangle(rx, ry + glow_th, glow_th, rh - glow_th * 2, GR, GG, GB, a)           -- left
         renderer.rectangle(rx + rw - glow_th, ry + glow_th, glow_th, rh - glow_th * 2, GR, GG, GB, a) -- right
     end
+
+    -- crisp bright rim right on the border (pulses with the breathing)
+    local rim_a = math.min(255, (150 + 95 * pulse) * fade)
+    renderer.rectangle(x - 1, y - 1, dw + 2, 2, GR, GG, GB, rim_a)               -- top
+    renderer.rectangle(x - 1, y + dh - 1, dw + 2, 2, GR, GG, GB, rim_a)          -- bottom
+    renderer.rectangle(x - 1, y + 1, 2, dh - 2, GR, GG, GB, rim_a)               -- left
+    renderer.rectangle(x + dw - 1, y + 1, 2, dh - 2, GR, GG, GB, rim_a)          -- right
 
     pcall(function()
         intro_animation.image:draw(x, y, dw, dh, 255, 255, 255, math.floor(255 * fade), false, "f")
