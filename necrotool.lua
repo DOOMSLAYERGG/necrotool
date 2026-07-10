@@ -317,16 +317,24 @@ UI.tab = ui.new_combobox("LUA", "A", "\aFFFFFFFF  Tab", {"Visuals", "World", "Ch
 -- setting the Tab combobox and refreshing visibility. Stored on the UI table
 -- and built in a do-block so no new chunk-level locals are added.
 UI.nav_label = ui.new_label("LUA", "A", "\aFFFFFFFF  \aB9BEFFFF― \aFFFFFFFFmenu \aB9BEFFFF―")
+-- internal drill-down state: false = show the nav menu, true = show a section
+UI.nav_open = ui.new_checkbox("LUA", "A", "\aFFFFFFFF  nav open")
+ui.set_visible(UI.nav_open, false)
 UI.nav = {}
 do
     local nav_tabs = {"Visuals", "World", "Changer", "Misc", "Autobuy", "Trashtalk", "Config"}
     for _, name in ipairs(nav_tabs) do
         UI.nav[name] = ui.new_button("LUA", "A", "\aB9BEFFFF » \aFFFFFFFF" .. name, function()
             ui.set(UI.tab, name)
+            ui.set(UI.nav_open, true)          -- expand into the section
             if UI._update_visibility then UI._update_visibility() end
         end)
     end
 end
+UI.nav_back = ui.new_button("LUA", "A", "\aB9BEFFFF « \aFFFFFFFFBack", function()
+    ui.set(UI.nav_open, false)                 -- collapse back to the menu
+    if UI._update_visibility then UI._update_visibility() end
+end)
 
 UI.notifications = ui.new_checkbox("LUA", "A", "\aFFFFFFFF  Notifications")
 UI.notify_types = ui.new_multiselect("LUA", "A", "\aFFFFFFFF    Types", {
@@ -959,7 +967,7 @@ local function update_autobuy_commands()
 end
 
 local function update_visibility_changer()
-    local enabled = ui.get(UI.enabled)
+    local enabled = ui.get(UI.enabled) and ui.get(UI.nav_open)
     local is_changer = enabled and ui.get(UI.tab) == "Changer"
     
     ui.set_visible(UI.model_changer, is_changer)
@@ -1017,7 +1025,7 @@ local function update_visibility_changer()
 end
 
 local function update_visibility_trashtalk()
-    local enabled = ui.get(UI.enabled)
+    local enabled = ui.get(UI.enabled) and ui.get(UI.nav_open)
     local is_trashtalk = enabled and ui.get(UI.tab) == "Trashtalk"
     
     ui.set_visible(UI.trashtalk_enabled, is_trashtalk)
@@ -1047,7 +1055,7 @@ local function update_visibility_trashtalk()
 end
 
 local function update_visibility_config()
-    local enabled = ui.get(UI.enabled)
+    local enabled = ui.get(UI.enabled) and ui.get(UI.nav_open)
     local is_config = enabled and ui.get(UI.tab) == "Config"
     
     ui.set_visible(UI.config_name, is_config)
@@ -1061,7 +1069,7 @@ local function update_visibility_config()
 end
 
 local function update_visibility_autobuy()
-    local enabled = ui.get(UI.enabled)
+    local enabled = ui.get(UI.enabled) and ui.get(UI.nav_open)
     local is_autobuy = enabled and ui.get(UI.tab) == "Autobuy"
     
     ui.set_visible(UI.autobuy_enabled, is_autobuy)
@@ -1086,7 +1094,7 @@ local function update_visibility_autobuy()
 end
 
 local function update_visibility_visuals()
-    local enabled = ui.get(UI.enabled)
+    local enabled = ui.get(UI.enabled) and ui.get(UI.nav_open)
     local is_visuals = enabled and ui.get(UI.tab) == "Visuals"
     
     ui.set_visible(UI.notifications, is_visuals)
@@ -1117,7 +1125,7 @@ local function update_visibility_visuals()
 end
 
 local function update_visibility_hit_effect()
-    local enabled = ui.get(UI.enabled)
+    local enabled = ui.get(UI.enabled) and ui.get(UI.nav_open)
     local is_visuals = enabled and ui.get(UI.tab) == "Visuals"
     
     ui.set_visible(UI.hit_effect, is_visuals)
@@ -1138,7 +1146,7 @@ local function update_visibility_hit_effect()
 end
 
 local function update_visibility_fog_scope()
-    local enabled = ui.get(UI.enabled)
+    local enabled = ui.get(UI.enabled) and ui.get(UI.nav_open)
     local is_visuals = enabled and ui.get(UI.tab) == "Visuals"
     
     ui.set_visible(UI.scope, is_visuals)
@@ -1158,7 +1166,7 @@ local function update_visibility_fog_scope()
 end
 
 local function update_visibility_tracers_trails()
-    local enabled = ui.get(UI.enabled)
+    local enabled = ui.get(UI.enabled) and ui.get(UI.nav_open)
     local is_visuals = enabled and ui.get(UI.tab) == "Visuals"
     
     ui.set_visible(UI.tracers, is_visuals)
@@ -1197,7 +1205,7 @@ local function update_visibility_tracers_trails()
 end
 
 local function update_visibility_misc()
-    local enabled = ui.get(UI.enabled)
+    local enabled = ui.get(UI.enabled) and ui.get(UI.nav_open)
     local is_misc = enabled and ui.get(UI.tab) == "Misc"
 
     ui.set_visible(UI.clantag, is_misc)
@@ -1244,7 +1252,7 @@ local function update_visibility_misc()
 end
 
 local function update_visibility_world()
-    local enabled = ui.get(UI.enabled)
+    local enabled = ui.get(UI.enabled) and ui.get(UI.nav_open)
     local is_world = enabled and ui.get(UI.tab) == "World"
     
     ui.set_visible(UI.fog, is_world)
@@ -1293,12 +1301,14 @@ end
 
 local function update_visibility()
     local enabled = ui.get(UI.enabled)
-    ui.set_visible(UI.tab, enabled)
-    -- navigation buttons follow the main enable toggle
-    ui.set_visible(UI.nav_label, enabled)
+    local open = ui.get(UI.nav_open)
+    -- closed: show the nav menu (tab + buttons); open: show the section + Back
+    ui.set_visible(UI.tab, enabled and not open)
+    ui.set_visible(UI.nav_label, enabled and not open)
     for _, btn in pairs(UI.nav) do
-        ui.set_visible(btn, enabled)
+        ui.set_visible(btn, enabled and not open)
     end
+    ui.set_visible(UI.nav_back, enabled and open)
     update_visibility_visuals()
     update_visibility_hit_effect()
     update_visibility_fog_scope()
