@@ -333,8 +333,12 @@ do
     end
 end
 UI.nav_back = ui.new_button("LUA", "A", "\aB9BEFFFF « \aFFFFFFFFBack", function()
-    ui.set(UI.nav_open, false)                 -- collapse back to the menu
-    if UI.setup_focus then ui.set(UI.setup_focus, "None") end
+    -- two-level back: a focused feature -> the Setup list -> the tab menu
+    if UI.setup_focus and ui.get(UI.setup_focus) ~= "None" then
+        ui.set(UI.setup_focus, "None")         -- back to the Setup list
+    else
+        ui.set(UI.nav_open, false)             -- back to the tab menu
+    end
     if UI._update_visibility then UI._update_visibility() end
 end)
 
@@ -1024,11 +1028,12 @@ local function update_visibility_changer()
     local is_changer = enabled and ui.get(UI.tab) == "Changer"
     local focus = ui.get(UI.setup_focus)
 
-    -- "Setup <name>" rows for every Changer feature (grey when off, accent when on)
+    -- "Setup <name>" rows: only on the tab landing (hidden once a feature is focused)
+    local none = focus == "None"
     local function row(nm, ref)
         local on = ui.get(ref)
-        ui.set_visible(UI.su_on[nm], is_changer and on)
-        ui.set_visible(UI.su_off[nm], is_changer and not on)
+        ui.set_visible(UI.su_on[nm], is_changer and none and on)
+        ui.set_visible(UI.su_off[nm], is_changer and none and not on)
     end
     row("Model changer", UI.model_changer)
     row("Hit sound", UI.hit_sound)
@@ -1176,11 +1181,13 @@ local function update_visibility_visuals()
     local is_visuals = enabled and ui.get(UI.tab) == "Visuals"
     local focus = ui.get(UI.setup_focus)
 
-    -- "Setup <name>" rows for every Visuals feature (grey when off, accent when on)
+    -- "Setup <name>" rows: only on the tab landing (hidden once a feature is
+    -- focused, so opening one leaves just its settings + the Back button)
+    local none = focus == "None"
     local function row(nm, ref)
         local on = ui.get(ref)
-        ui.set_visible(UI.su_on[nm], is_visuals and on)
-        ui.set_visible(UI.su_off[nm], is_visuals and not on)
+        ui.set_visible(UI.su_on[nm], is_visuals and none and on)
+        ui.set_visible(UI.su_off[nm], is_visuals and none and not on)
     end
     row("Notifications", UI.notifications)
     row("Kill image", UI.kill_image)
@@ -1330,10 +1337,10 @@ local function update_visibility_misc()
     local f_keybinds   = is_misc and focus == "Keybinds"
     local f_indicators = is_misc and focus == "Indicators"
 
-    -- "Setup <name>" rows (grey when off, accent when on)
+    -- "Setup <name>" rows: only on the tab landing (hidden once a feature is focused)
     local function row(nm, on)
-        ui.set_visible(UI.su_on[nm], is_misc and on)
-        ui.set_visible(UI.su_off[nm], is_misc and not on)
+        ui.set_visible(UI.su_on[nm], is_misc and none and on)
+        ui.set_visible(UI.su_off[nm], is_misc and none and not on)
     end
     row("Clantag", clantag_enabled)
     row("Watermark", watermark_enabled)
@@ -1387,11 +1394,12 @@ local function update_visibility_world()
     local is_world = enabled and ui.get(UI.tab) == "World"
     local focus = ui.get(UI.setup_focus)
 
-    -- "Setup <name>" rows for every World feature (grey when off, accent when on)
+    -- "Setup <name>" rows: only on the tab landing (hidden once a feature is focused)
+    local none = focus == "None"
     local function row(nm, ref)
         local on = ui.get(ref)
-        ui.set_visible(UI.su_on[nm], is_world and on)
-        ui.set_visible(UI.su_off[nm], is_world and not on)
+        ui.set_visible(UI.su_on[nm], is_world and none and on)
+        ui.set_visible(UI.su_off[nm], is_world and none and not on)
     end
     row("Fog", UI.fog)
     row("Wall color", UI.wall_color)
