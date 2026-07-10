@@ -424,7 +424,7 @@ UI.clantag = ui.new_checkbox("LUA", "A", "\aFFFFFFFF  Clantag")
 UI.clantag_style = ui.new_combobox("LUA", "A", "\aFFFFFFFF    Style\nclantag", {"V2", "V1"})
 UI.watermark = ui.new_checkbox("LUA", "A", "\aFFFFFFFF  Watermark")
 UI.watermark_name = ui.new_combobox("LUA", "A", "\aFFFFFFFF    Name", {"necroptosis.red", "winston.red", "mood.blue", "sp!dusttale.red"})
-UI.watermark_style = ui.new_combobox("LUA", "A", "\aFFFFFFFF    Style\nwatermark", {"Black", "Pink"})
+UI.watermark_style = ui.new_combobox("LUA", "A", "\aFFFFFFFF    Style\nwatermark", {"Lavender", "Black", "Pink"})
 UI.watermark_color = ui.new_color_picker("LUA", "A", "\aFFFFFFFF    Border color\nwatermark", 255, 255, 255, 255)
 UI.spectators = ui.new_checkbox("LUA", "A", "\aFFFFFFFF  Spectators")
 UI.spectators_size = ui.new_combobox("LUA", "A", "\aFFFFFFFF    Size\nspectators", {"Small", "Medium"})
@@ -2968,7 +2968,37 @@ local function draw_watermark()
     local A_R, A_G, A_B = wc_r, wc_g, wc_b
     
     local style = ui.get(UI.watermark_style)
-    
+
+    -- Lavender style: one-to-one look of the lavender_solus watermark
+    if style == "Lavender" then
+        -- split the name at its first dot so the suffix (".red"/".blue"/…) is
+        -- accent-coloured, mirroring lavender's "GameSense.pub" highlight
+        local base, suffix = uwu_text, ""
+        local dot = uwu_text:find("%.")
+        if dot then
+            base = uwu_text:sub(1, dot - 1)
+            suffix = uwu_text:sub(dot)
+        end
+
+        local lav_str = base
+            .. UI.lav.colour(suffix, P_R, P_G, P_B)
+            .. " | " .. UI.lav.colour(time_str, P_R, P_G, P_B)
+            .. latency_str
+
+        local mw, mh = renderer.measure_text("", lav_str)
+        local lav_w = mw + 10
+        local lav_h = 25
+        local lav_x = screen_x - lav_w - 15
+        local lav_y = 10
+
+        UI.lav.rounded_rectangle(lav_x, lav_y, lav_w, lav_h, 19, 19, 19, watermark_alpha, 5)
+        UI.lav.rectangle_outline(lav_x, lav_y, lav_w, lav_h, 32, 32, 32, watermark_alpha, 2, 3)
+        UI.lav.fade_rect(lav_x - 1, lav_y, lav_w + 2, lav_h, 5, P_R, P_G, P_B, watermark_alpha, 190, lav_h * 2)
+
+        renderer.text(lav_x + 5, lav_y + (lav_h - mh) / 2, 226, 226, 226, watermark_alpha, "", 0, lav_str)
+        return
+    end
+
     if style == "Black" then
         for i = 1, 2 do
             local glow_size = i * 2
@@ -4046,6 +4076,13 @@ UI.lav = {
 
 function UI.lav.inverse_lerp(a, b, weight)
     return (weight - a) / (b - a)
+end
+
+-- wrap a substring in an accent colour and reset to lavender's light-grey (CDCDCDFF)
+function UI.lav.colour(text, r, g, b, a)
+    return string.format("\a%02x%02x%02x%02x%s\aCDCDCDFF",
+        math.floor(r + 0.5), math.floor(g + 0.5), math.floor(b + 0.5),
+        math.floor((a or 255) + 0.5), text)
 end
 
 function UI.lav.rectangle_outline(x, y, w, h, r, g, b, a, thickness, radius)
