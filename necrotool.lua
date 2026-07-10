@@ -1302,8 +1302,9 @@ end
 local function update_visibility()
     local enabled = ui.get(UI.enabled)
     local open = ui.get(UI.nav_open)
-    -- closed: show the nav menu (tab + buttons); open: show the section + Back
-    ui.set_visible(UI.tab, enabled and not open)
+    -- Tab combobox stays hidden (state holder only); the nav buttons drive it
+    ui.set_visible(UI.tab, false)
+    -- closed: show the nav menu (label + buttons); open: show the section + Back
     ui.set_visible(UI.nav_label, enabled and not open)
     for _, btn in pairs(UI.nav) do
         ui.set_visible(btn, enabled and not open)
