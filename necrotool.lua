@@ -2018,10 +2018,10 @@ local function draw_intro_animation()
 
     -- tight soft halo: short spread with a quadratic falloff so most of the
     -- brightness sits right against the content border
-    local glow_layers = 12
-    local glow_spread = 1.15 + 0.35 * pulse                  -- spread breathes a touch
-    local glow_th = glow_spread + 1.3
-    local halo_a = (58 + 62 * pulse) * fade                  -- intensity breathes
+    local glow_layers = 14
+    local glow_spread = 1.5 + 0.45 * pulse                   -- spread breathes a touch
+    local glow_th = glow_spread + 1.4
+    local halo_a = (100 + 85 * pulse) * fade                 -- medium, clearly visible
     for i = glow_layers, 1, -1 do
         local s = i * glow_spread
         local t = i / glow_layers
