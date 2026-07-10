@@ -424,7 +424,7 @@ UI.clantag = ui.new_checkbox("LUA", "A", "\aFFFFFFFF  Clantag")
 UI.clantag_style = ui.new_combobox("LUA", "A", "\aFFFFFFFF    Style\nclantag", {"V2", "V1"})
 UI.watermark = ui.new_checkbox("LUA", "A", "\aFFFFFFFF  Watermark")
 UI.watermark_name = ui.new_combobox("LUA", "A", "\aFFFFFFFF    Name", {"necroptosis.red", "winston.red", "mood.blue", "sp!dusttale.red"})
-UI.watermark_style = ui.new_combobox("LUA", "A", "\aFFFFFFFF    Style\nwatermark", {"Lavender", "Black", "Pink"})
+UI.watermark_style = ui.new_combobox("LUA", "A", "\aFFFFFFFF    Style\nwatermark", {"Lavender", "Windows", "Black", "Pink"})
 UI.watermark_color = ui.new_color_picker("LUA", "A", "\aFFFFFFFF    Border color\nwatermark", 255, 255, 255, 255)
 UI.spectators = ui.new_checkbox("LUA", "A", "\aFFFFFFFF  Spectators")
 UI.spectators_size = ui.new_combobox("LUA", "A", "\aFFFFFFFF    Size\nspectators", {"Small", "Medium"})
@@ -2999,6 +2999,33 @@ local function draw_watermark()
         return
     end
 
+    -- Windows style: emberfix multi-panel look (matches the Windows keybind style)
+    if style == "Windows" then
+        -- name in bold white, dynamic info (time / latency) in the accent colour
+        local win_uwu_w, win_uwu_h = renderer.measure_text("b", uwu_text)
+        local win_info_w, win_info_h = renderer.measure_text("", info_text)
+
+        local win_w = win_uwu_w + win_info_w + 28
+        local win_h = math.max(win_uwu_h, win_info_h) + 12
+        local win_x = screen_x - win_w - 15
+        local win_y = 10
+
+        UI.win_interface(win_x, win_y, win_w, win_h, P_R, P_G, P_B, watermark_alpha)
+
+        local win_text_y = win_y + (win_h - win_uwu_h) / 2
+        local win_uwu_x = win_x + 12
+        local win_info_x = win_uwu_x + win_uwu_w
+
+        -- name (white with drop shadow)
+        renderer.text(win_uwu_x + 1, win_text_y + 1, 0, 0, 0, watermark_alpha * 0.5, "b", 0, uwu_text)
+        renderer.text(win_uwu_x, win_text_y, 255, 255, 255, watermark_alpha, "b", 0, uwu_text)
+
+        -- info (accent with drop shadow)
+        renderer.text(win_info_x + 1, win_text_y + 1, 0, 0, 0, watermark_alpha * 0.5, "", 0, info_text)
+        renderer.text(win_info_x, win_text_y, P_R, P_G, P_B, watermark_alpha, "", 0, info_text)
+        return
+    end
+
     if style == "Black" then
         for i = 1, 2 do
             local glow_size = i * 2
@@ -4058,6 +4085,11 @@ local function win_create_interface(x, y, w, h, r, g, b, a)
     win_rounded_outline(x + 1, y + 1, w - 2, h - 2, 4, 1, 60, 60, 60, a)
     win_rounded_outline(x + 2, y + 2, w - 4, h - 4, 4, 1, 40, 40, 40, a)
 end
+
+-- expose the window drawer on the UI table so functions defined earlier in the
+-- file (e.g. draw_watermark) can reach it — these win_* helpers are locals
+-- declared here and would otherwise be out of scope above.
+UI.win_interface = win_create_interface
 -- ===== end Windows-style helpers =====
 
 -- ===== Lavender-style keybinds (one-to-one port of lavender_solus.lua) =====
