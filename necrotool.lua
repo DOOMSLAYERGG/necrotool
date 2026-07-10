@@ -312,6 +312,22 @@ local UI = {}
 UI.enabled = ui.new_checkbox("LUA", "A", "\aFFFFFFFF necrotool")
 UI.tab = ui.new_combobox("LUA", "A", "\aFFFFFFFF  Tab", {"Visuals", "World", "Changer", "Misc", "Autobuy", "Trashtalk", "Config"})
 
+-- ===== Menu navigation buttons (Infinix-style) =====
+-- One button per tab: clicking it jumps straight to that tab's settings by
+-- setting the Tab combobox and refreshing visibility. Stored on the UI table
+-- and built in a do-block so no new chunk-level locals are added.
+UI.nav_label = ui.new_label("LUA", "A", "\aFFFFFFFF  \aB9BEFFFF― \aFFFFFFFFmenu \aB9BEFFFF―")
+UI.nav = {}
+do
+    local nav_tabs = {"Visuals", "World", "Changer", "Misc", "Autobuy", "Trashtalk", "Config"}
+    for _, name in ipairs(nav_tabs) do
+        UI.nav[name] = ui.new_button("LUA", "A", "\aB9BEFFFF » \aFFFFFFFF" .. name, function()
+            ui.set(UI.tab, name)
+            if UI._update_visibility then UI._update_visibility() end
+        end)
+    end
+end
+
 UI.notifications = ui.new_checkbox("LUA", "A", "\aFFFFFFFF  Notifications")
 UI.notify_types = ui.new_multiselect("LUA", "A", "\aFFFFFFFF    Types", {
     "Hit", "Miss", "Hurt", "Death"
@@ -1278,6 +1294,11 @@ end
 local function update_visibility()
     local enabled = ui.get(UI.enabled)
     ui.set_visible(UI.tab, enabled)
+    -- navigation buttons follow the main enable toggle
+    ui.set_visible(UI.nav_label, enabled)
+    for _, btn in pairs(UI.nav) do
+        ui.set_visible(btn, enabled)
+    end
     update_visibility_visuals()
     update_visibility_hit_effect()
     update_visibility_fog_scope()
@@ -1289,6 +1310,9 @@ local function update_visibility()
     update_visibility_trashtalk()
     update_visibility_config()
 end
+
+-- expose for the nav button callbacks (defined earlier, before this function)
+UI._update_visibility = update_visibility
 
 ui.set_callback(UI.enabled, update_visibility)
 ui.set_callback(UI.tab, update_visibility)
