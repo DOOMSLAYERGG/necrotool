@@ -1998,6 +1998,25 @@ local function draw_intro_animation()
     local x = math.floor((screen_x - dw) / 2)
     local y = math.floor((screen_y - dh) / 2)
 
+    -- soft glow derived from intro.png's colour palette (purple-leaning average
+    -- of the image: avg ~203,151,216 / vibrant ~172,62,228 -> soft vivid purple).
+    -- Drawn as fading concentric rings so it reads as a smooth halo.
+    local GR, GG, GB = 188, 104, 228
+    local glow_layers = 26
+    local glow_spread = 2.6
+    local glow_th = glow_spread + 1.5
+    for i = glow_layers, 1, -1 do
+        local s = i * glow_spread
+        local t = i / glow_layers
+        local a = 72 * (1 - t) * (1 - t) * fade   -- soft outward falloff
+        local rx, ry = x - s, y - s
+        local rw, rh = dw + s * 2, dh + s * 2
+        renderer.rectangle(rx, ry, rw, glow_th, GR, GG, GB, a)                       -- top
+        renderer.rectangle(rx, ry + rh - glow_th, rw, glow_th, GR, GG, GB, a)        -- bottom
+        renderer.rectangle(rx, ry + glow_th, glow_th, rh - glow_th * 2, GR, GG, GB, a)          -- left
+        renderer.rectangle(rx + rw - glow_th, ry + glow_th, glow_th, rh - glow_th * 2, GR, GG, GB, a) -- right
+    end
+
     pcall(function()
         intro_animation.image:draw(x, y, dw, dh, 255, 255, 255, math.floor(255 * fade), false, "f")
     end)
