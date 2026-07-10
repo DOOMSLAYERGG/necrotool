@@ -1560,28 +1560,36 @@ do
     local http_ok, http = pcall(require, "gamesense/http")
     if not http_ok then http = nil end
 
-    local function play()
-        pcall(native_Surface_PlaySound, SOUND_PLAY)
-    end
-
     local function have_file()
         local ok, data = pcall(readfile, SOUND_DISK)
         return ok and data ~= nil and #data > 0
     end
 
+    -- Surface_PlaySound doesn't work when called synchronously during script
+    -- load (the sound system isn't ready yet). Mark the file ready, then play
+    -- it on the first rendered frame instead.
+    local ready = false
+    local played = false
+
     if have_file() then
-        -- already downloaded on a previous launch -> just play it
-        play()
+        ready = true
     elseif http then
-        -- fetch from GitHub, write it into csgo/sound, then play
         http.get(SOUND_URL, function(success, response)
             if success and response and response.body and #response.body > 0
                 and (response.status == nil or response.status == 200) then
                 pcall(writefile, SOUND_DISK, response.body)
-                play()
+                ready = true
             end
         end)
     end
+
+    local function play_on_first_frame()
+        if played or not ready then return end
+        played = true
+        pcall(native_Surface_PlaySound, SOUND_PLAY)
+        client.unset_event_callback("paint", play_on_first_frame)
+    end
+    client.set_event_callback("paint", play_on_first_frame)
 end
 
 local function update_config_list()
