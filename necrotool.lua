@@ -1544,6 +1544,46 @@ update_visibility()
 local base64 = require("gamesense/base64")
 local clipboard_lib = require("gamesense/clipboard")
 
+-- ===== startup sound: download an mp3 from GitHub, save it to csgo/sound and
+-- play it on load (same idea as kittyhook's GitHub file loader / rinnegan's
+-- startup sound). Wrapped in a do-block so no chunk-level locals are added. =====
+do
+    local SOUND_FILE = "8559825291_1.mp3"
+    -- readfile / writefile are rooted at the game root, so csgo/sound/<file>
+    -- maps to  ...\csgo legacy\csgo\sound\<file>
+    local SOUND_DISK = "csgo/sound/" .. SOUND_FILE
+    -- Surface_PlaySound is rooted at csgo/sound, so it just needs the file name
+    local SOUND_PLAY = SOUND_FILE
+    -- raw GitHub URL (github.com/.../blob/<ref>/<path>  ->  raw.githubusercontent.com/.../<ref>/<path>)
+    local SOUND_URL  = "https://raw.githubusercontent.com/DOOMSLAYERGG/necrotool/claude/necrotool-keybind-style-sbmkhz/content/" .. SOUND_FILE
+
+    local http_ok, http = pcall(require, "gamesense/http")
+    if not http_ok then http = nil end
+
+    local function play()
+        pcall(native_Surface_PlaySound, SOUND_PLAY)
+    end
+
+    local function have_file()
+        local ok, data = pcall(readfile, SOUND_DISK)
+        return ok and data ~= nil and #data > 0
+    end
+
+    if have_file() then
+        -- already downloaded on a previous launch -> just play it
+        play()
+    elseif http then
+        -- fetch from GitHub, write it into csgo/sound, then play
+        http.get(SOUND_URL, function(success, response)
+            if success and response and response.body and #response.body > 0
+                and (response.status == nil or response.status == 200) then
+                pcall(writefile, SOUND_DISK, response.body)
+                play()
+            end
+        end)
+    end
+end
+
 local function update_config_list()
     local names = {}
     for i = 1, #config_system.configs do
