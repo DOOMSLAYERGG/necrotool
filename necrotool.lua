@@ -1988,14 +1988,12 @@ local function draw_intro_animation()
     -- dark backdrop
     renderer.rectangle(0, 0, screen_x, screen_y, 5, 3, 10, 220 * fade)
 
-    -- native size; downscale only if it wouldn't fit the screen, never upscale
+    -- a bit smaller than native; fit within ~72% of the screen and cap at 0.85
+    -- so it always downscales (never upscales -> no quality loss)
     local w, h = intro_animation.img_w, intro_animation.img_h
     if w <= 0 or h <= 0 then w, h = 512, 512 end
-    local max_w, max_h = screen_x * 0.9, screen_y * 0.9
-    local scale = 1
-    if w > max_w or h > max_h then
-        scale = math.min(max_w / w, max_h / h)
-    end
+    local max_w, max_h = screen_x * 0.72, screen_y * 0.72
+    local scale = math.min(max_w / w, max_h / h, 0.85)
     local dw, dh = math.floor(w * scale + 0.5), math.floor(h * scale + 0.5)
     local x = math.floor((screen_x - dw) / 2)
     local y = math.floor((screen_y - dh) / 2)
