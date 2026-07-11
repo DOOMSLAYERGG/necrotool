@@ -308,6 +308,32 @@ if #media.kill_images == 0 then
     media.kill_image_names[2] = "No images found"
 end
 
+-- hitmarker images: create csgo/materials/hitmarker and collect its png/jpg files
+media.hitmarker_names = {"Default cross"}
+media.hitmarker_files = {}
+do
+    -- writing a file into the folder creates the folder on first launch
+    pcall(writefile, "csgo/materials/hitmarker/readme.txt", "Put your .png / .jpg hitmarker images in this folder, then pick them in necrotool.")
+
+    local hm_path = char_buffer(160)
+    current_directory(hm_path, ffi.sizeof(hm_path))
+    hm_path = string.format("%s\\csgo\\materials\\hitmarker", ffi.string(hm_path))
+    add_to_searchpath(hm_path, "HITMARKER", 0)
+
+    local handle = int_ptr()
+    local file = find_first("*", "HITMARKER", handle)
+    while file ~= nil do
+        local fn = ffi.string(file)
+        if find_is_directory(handle[0]) == false and (fn:find("%.png") or fn:find("%.jpe?g")) then
+            local disp = fn:gsub("_", " "):gsub("%.png$", ""):gsub("%.jpe?g$", "")
+            media.hitmarker_names[#media.hitmarker_names + 1] = disp
+            media.hitmarker_files[disp] = fn
+        end
+        file = find_next(handle[0])
+    end
+    find_close(handle[0])
+end
+
 local UI = {}
 UI.enabled = ui.new_checkbox("LUA", "A", "\aFFFFFFFF necrotool")
 UI.tab = ui.new_combobox("LUA", "A", "\aFFFFFFFF  Tab", {"Visuals", "World", "Changer", "Misc", "Autobuy", "Trashtalk", "Config"})
@@ -346,7 +372,7 @@ end)
 UI.su_off = UI.su_off or {}
 UI.su_on  = UI.su_on or {}
 do
-    local names = {"Notifications", "Kill image", "Hit effect", "Healthbar", "Scope", "Tracers", "Trails", "Grenade trail"}
+    local names = {"Notifications", "Kill image", "Hit effect", "Healthbar", "Scope", "Tracers", "Trails", "Grenade trail", "Hitmarker"}
     for _, nm in ipairs(names) do
         UI.su_off[nm] = ui.new_button("LUA", "A", "\aC8C8C8C8 Setup " .. nm, function() UI.setup_jump(nm) end)
         UI.su_on[nm]  = ui.new_button("LUA", "A", "\aB9BEFFFF Setup " .. nm, function() UI.setup_jump(nm) end)
@@ -431,6 +457,65 @@ UI.grenade_trail_duration = ui.new_slider("LUA", "A", "\aFFFFFFFF    Duration\ng
 UI.grenade_trail_glow = ui.new_checkbox("LUA", "A", "\aFFFFFFFF    Glow\ngrenade_trail")
 UI.grenade_trail_glow_intensity = ui.new_slider("LUA", "A", "\aFFFFFFFF    Glow intensity\ngrenade_trail", 1, 5, 2)
 
+UI.hitmarker = ui.new_checkbox("LUA", "A", "\aFFFFFFFF  Hitmarker")
+UI.hitmarker_image = ui.new_combobox("LUA", "A", "\aFFFFFFFF    Image\nhitmarker", media.hitmarker_names)
+UI.hitmarker_size = ui.new_slider("LUA", "A", "\aFFFFFFFF    Size\nhitmarker", 8, 400, 40)
+UI.hitmarker_alpha = ui.new_slider("LUA", "A", "\aFFFFFFFF    Transparency\nhitmarker", 0, 255, 255)
+UI.hitmarker_duration = ui.new_slider("LUA", "A", "\aFFFFFFFF    Duration\nhitmarker", 1, 30, 6, true, "s", 0.1)
+UI.hitmarker_color = ui.new_color_picker("LUA", "A", "\aFFFFFFFF    Color\nhitmarker", 255, 255, 255, 255)
+
+-- hitmarker runtime: image cache + last-hit time, drawn at the crosshair on hit
+UI.hm = { last_hit = 0, cache = {} }
+
+function UI.hm.get_tex(fname)
+    if UI.hm.cache[fname] ~= nil then
+        return UI.hm.cache[fname] or nil
+    end
+    local ok, img = pcall(function()
+        local data = readfile("csgo/materials/hitmarker/" .. fname)
+        if not data or #data == 0 then return nil end
+        if fname:lower():find("%.png") then return images.load_png(data) end
+        if images.load_jpg then return images.load_jpg(data) end
+        return images.load_png(data)
+    end)
+    UI.hm.cache[fname] = (ok and img) or false
+    return UI.hm.cache[fname] or nil
+end
+
+function UI.hm.draw()
+    if not ui.get(UI.enabled) or not ui.get(UI.hitmarker) then return end
+
+    local dur = ui.get(UI.hitmarker_duration) * 0.1
+    local elapsed = globals.realtime() - UI.hm.last_hit
+    if dur <= 0 or elapsed < 0 or elapsed > dur then return end
+
+    local fade = 1 - (elapsed / dur)
+    local r, g, b = ui.get(UI.hitmarker_color)
+    local a = math.floor(ui.get(UI.hitmarker_alpha) * fade)
+    if a <= 0 then return end
+
+    local sx, sy = client.screen_size()
+    local cx, cy = sx / 2, sy / 2
+    local size = ui.get(UI.hitmarker_size)
+
+    local fname = media.hitmarker_files[ui.get(UI.hitmarker_image)]
+    local tex = fname and UI.hm.get_tex(fname) or nil
+
+    if tex then
+        pcall(function()
+            tex:draw(math.floor(cx - size / 2), math.floor(cy - size / 2), size, size, r, g, b, a, false, "f")
+        end)
+    else
+        -- default cross hitmarker (four diagonal ticks)
+        local gp = size * 0.18
+        local ln = size * 0.5
+        renderer.line(cx - gp - ln, cy - gp - ln, cx - gp, cy - gp, r, g, b, a)
+        renderer.line(cx + gp + ln, cy - gp - ln, cx + gp, cy - gp, r, g, b, a)
+        renderer.line(cx - gp - ln, cy + gp + ln, cx - gp, cy + gp, r, g, b, a)
+        renderer.line(cx + gp + ln, cy + gp + ln, cx + gp, cy + gp, r, g, b, a)
+    end
+end
+
 -- rinnegan-style "Setup" rows for the World features (grey = off, accent = on)
 do
     local names = {"Fog", "Wall color", "Bloom", "Exposure", "Model brightness", "Smooth animation", "Smooth camera"}
@@ -474,7 +559,7 @@ UI.smooth_camera_roll = ui.new_slider("LUA", "A", "\aFFFFFFFF    Camera roll", -
 -- settings (click again to collapse back to the list).
 UI.setup_focus = ui.new_combobox("LUA", "A", "\aFFFFFFFF  setup focus", {
     "None",
-    "Notifications", "Kill image", "Hit effect", "Healthbar", "Scope", "Tracers", "Trails", "Grenade trail",
+    "Notifications", "Kill image", "Hit effect", "Healthbar", "Scope", "Tracers", "Trails", "Grenade trail", "Hitmarker",
     "Fog", "Wall color", "Bloom", "Exposure", "Model brightness", "Smooth animation", "Smooth camera",
     "Model changer", "Hit sound", "Death sound", "Viewmodel", "Console color", "Aspect ratio", "Thirdperson", "Skybox", "FOV override",
     "Clantag", "Watermark", "Spectators", "Keybinds", "Indicators",
@@ -1198,6 +1283,7 @@ local function update_visibility_visuals()
     row("Tracers", UI.tracers)
     row("Trails", UI.trails)
     row("Grenade trail", UI.grenade_trail)
+    row("Hitmarker", UI.hitmarker)
 
     local f_notifications = is_visuals and focus == "Notifications"
     ui.set_visible(UI.notifications, f_notifications)
@@ -1227,6 +1313,15 @@ local function update_visibility_visuals()
     ui.set_visible(UI.healthbar_color_full, show_healthbar_opts)
     ui.set_visible(UI.healthbar_color_empty, show_healthbar_opts and healthbar_style == "Gradient")
     ui.set_visible(UI.healthbar_style, show_healthbar_opts)
+
+    local f_hitmarker = is_visuals and focus == "Hitmarker"
+    ui.set_visible(UI.hitmarker, f_hitmarker)
+    local hm_enabled = ui.get(UI.hitmarker)
+    ui.set_visible(UI.hitmarker_image, f_hitmarker and hm_enabled)
+    ui.set_visible(UI.hitmarker_size, f_hitmarker and hm_enabled)
+    ui.set_visible(UI.hitmarker_alpha, f_hitmarker and hm_enabled)
+    ui.set_visible(UI.hitmarker_duration, f_hitmarker and hm_enabled)
+    ui.set_visible(UI.hitmarker_color, f_hitmarker and hm_enabled)
 end
 
 local function update_visibility_hit_effect()
@@ -1500,6 +1595,7 @@ ui.set_callback(UI.tab, update_visibility)
 ui.set_callback(UI.notifications, update_visibility)
 ui.set_callback(UI.healthbar, update_visibility)
 ui.set_callback(UI.healthbar_style, update_visibility)
+ui.set_callback(UI.hitmarker, update_visibility)
 ui.set_callback(UI.clantag, update_visibility)
 ui.set_callback(UI.watermark, update_visibility)
 ui.set_callback(UI.watermark_setup, update_visibility)
@@ -6281,6 +6377,7 @@ local function on_paint()
     draw_keybinds()
     draw_indicators()
     draw_healthbar()
+    UI.hm.draw()
 end
 
 handle_warmup_assistant = function()
@@ -6421,6 +6518,12 @@ apply_fps_boost = function()
 end
 
 client.set_event_callback('aim_hit', on_aim_hit)
+-- trigger the hitmarker at the crosshair whenever a shot lands
+client.set_event_callback('aim_hit', function()
+    if ui.get(UI.enabled) and ui.get(UI.hitmarker) then
+        UI.hm.last_hit = globals.realtime()
+    end
+end)
 client.set_event_callback('aim_miss', on_aim_miss)
 client.set_event_callback('player_hurt', on_player_hurt)
 client.set_event_callback('player_death', on_player_death)
