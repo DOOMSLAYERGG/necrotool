@@ -467,11 +467,10 @@ UI.hitmarker_alpha = ui.new_slider("LUA", "A", "\aFFFFFFFF    Transparency\nhitm
 UI.hitmarker_duration = ui.new_slider("LUA", "A", "\aFFFFFFFF    Duration\nhitmarker", 1, 30, 6, true, "s", 0.1)
 UI.hitmarker_color = ui.new_color_picker("LUA", "A", "\aFFFFFFFF    Color\nhitmarker", 255, 255, 255, 255)
 
--- hitmarker runtime: image cache + world-space markers placed where the shot
--- landed on the enemy (frozen at hit position: leg -> leg, head -> head, ...)
-UI.hm = { pending = {}, markers = {}, cache = {} }
--- rough hitgroup -> hitbox map used only as a fallback when aim_fire has no coords
-UI.hm.hg_to_hb = {[0] = 6, [1] = 0, [2] = 6, [3] = 3, [4] = 13, [5] = 14, [6] = 17, [7] = 18}
+-- hitmarker runtime (luasensez-style): on aim_fire we queue the shot's impact
+-- point in world space; every frame we project it with world_to_screen and draw
+-- the marker there, so it lands on the enemy where the shot went.
+UI.hm = { markers = {}, cache = {} }
 
 function UI.hm.get_tex(fname)
     if UI.hm.cache[fname] ~= nil then
@@ -528,32 +527,16 @@ function UI.hm.draw()
     end
 end
 
--- record where each shot is predicted to land, then freeze a marker there on hit
-function UI.hm.on_fire(e)
+-- freeze a marker at the shot's impact point (c.x, c.y, c.z from aim_fire)
+function UI.hm.on_fire(c)
     if not (ui.get(UI.enabled) and ui.get(UI.hitmarker)) then return end
-    if e and e.id and e.x and e.y and e.z then
-        UI.hm.pending[e.id] = {x = e.x, y = e.y, z = e.z}
+    if c and c.x and c.y and c.z then
+        UI.hm.markers[#UI.hm.markers + 1] = {x = c.x, y = c.y, z = c.z, spawn = globals.realtime()}
     end
 end
 
-function UI.hm.on_hit(e)
-    if not (ui.get(UI.enabled) and ui.get(UI.hitmarker)) then return end
-    local x, y, z
-    local p = e and e.id and UI.hm.pending[e.id]
-    if p then
-        x, y, z = p.x, p.y, p.z
-        UI.hm.pending[e.id] = nil
-    elseif e and e.target then
-        -- fallback: world position of the hit hitbox on the target
-        x, y, z = entity.hitbox_position(e.target, UI.hm.hg_to_hb[e.hitgroup] or 6)
-    end
-    if x and y and z then
-        UI.hm.markers[#UI.hm.markers + 1] = {x = x, y = y, z = z, spawn = globals.realtime()}
-    end
-end
-
-function UI.hm.on_miss(e)
-    if e and e.id then UI.hm.pending[e.id] = nil end
+function UI.hm.clear()
+    UI.hm.markers = {}
 end
 
 -- rinnegan-style "Setup" rows for the World features (grey = off, accent = on)
@@ -6558,10 +6541,9 @@ apply_fps_boost = function()
 end
 
 client.set_event_callback('aim_hit', on_aim_hit)
--- world-space hitmarker: freeze a marker where the shot lands on the enemy
+-- world hitmarker (luasensez-style): queue on fire, clear each new round
 client.set_event_callback('aim_fire', UI.hm.on_fire)
-client.set_event_callback('aim_hit', UI.hm.on_hit)
-client.set_event_callback('aim_miss', UI.hm.on_miss)
+client.set_event_callback('round_prestart', UI.hm.clear)
 client.set_event_callback('aim_miss', on_aim_miss)
 client.set_event_callback('player_hurt', on_player_hurt)
 client.set_event_callback('player_death', on_player_death)
