@@ -624,7 +624,7 @@ UI.clantag = ui.new_checkbox("LUA", "A", "\aFFFFFFFF  Clantag")
 UI.clantag_style = ui.new_combobox("LUA", "A", "\aFFFFFFFF    Style\nclantag", {"V2", "V1"})
 UI.watermark = ui.new_checkbox("LUA", "A", "\aFFFFFFFF  Watermark")
 UI.watermark_name = ui.new_combobox("LUA", "A", "\aFFFFFFFF    Name", {"necroptosis.red", "winston.red", "mood.blue", "sp!dusttale.red"})
-UI.watermark_style = ui.new_combobox("LUA", "A", "\aFFFFFFFF    Style\nwatermark", {"Lavender", "Windows", "Black", "Pink"})
+UI.watermark_style = ui.new_combobox("LUA", "A", "\aFFFFFFFF    Style\nwatermark", {"Lavender", "Windows", "Black", "Pink", "Simple"})
 UI.watermark_color = ui.new_color_picker("LUA", "A", "\aFFFFFFFF    Border color\nwatermark", 255, 255, 255, 255)
 UI.watermark_avatar = ui.new_checkbox("LUA", "A", "\aFFFFFFFF    Steam avatar")
 UI.watermark_setup = ui.new_checkbox("LUA", "A", "\aFFFFFFFF    Show setup watermark")
@@ -1643,12 +1643,15 @@ local function update_visibility_misc()
     ui.set_visible(UI.keybinds, f_keybinds)
     ui.set_visible(UI.indicators, f_indicators)
 
+    -- the Simple style has its own fixed layout, so its avatar + setup toggles
+    -- are hidden while it is selected
+    local wm_simple = ui.get(UI.watermark_style) == "Simple"
     ui.set_visible(UI.watermark_name, f_watermark and watermark_enabled)
     ui.set_visible(UI.watermark_style, f_watermark and watermark_enabled)
     ui.set_visible(UI.watermark_color, f_watermark and watermark_enabled)
-    ui.set_visible(UI.watermark_avatar, f_watermark and watermark_enabled)
-    ui.set_visible(UI.watermark_setup, f_watermark and watermark_enabled)
-    ui.set_visible(UI.watermark_setup_elems, f_watermark and watermark_enabled and ui.get(UI.watermark_setup))
+    ui.set_visible(UI.watermark_avatar, f_watermark and watermark_enabled and not wm_simple)
+    ui.set_visible(UI.watermark_setup, f_watermark and watermark_enabled and not wm_simple)
+    ui.set_visible(UI.watermark_setup_elems, f_watermark and watermark_enabled and not wm_simple and ui.get(UI.watermark_setup))
     ui.set_visible(UI.spectators_size, f_spectators and spectators_enabled)
     ui.set_visible(UI.spectators_style, f_spectators and spectators_enabled)
     ui.set_visible(UI.spectators_anim, f_spectators and spectators_enabled)
@@ -1830,6 +1833,7 @@ ui.set_callback(UI.hitmarker, update_visibility)
 ui.set_callback(UI.clantag, update_visibility)
 ui.set_callback(UI.watermark, update_visibility)
 ui.set_callback(UI.watermark_setup, update_visibility)
+ui.set_callback(UI.watermark_style, update_visibility)
 ui.set_callback(UI.death_sound, update_visibility)
 ui.set_callback(UI.kill_image, update_visibility)
 ui.set_callback(UI.hit_effect, update_visibility)
@@ -3552,6 +3556,29 @@ local function draw_watermark()
     local show_avatar = ui.get(UI.watermark_avatar)
     if show_avatar then
         UI.avatar.ensure()
+    end
+
+    -- Simple style (aesthetic_skeet port): steam avatar + NECROTOOL.LUA + [GS]
+    -- pinned to the left-middle of the screen. Always tries to load the avatar
+    -- (its own layout), so the separate "Steam avatar" toggle is hidden for it.
+    if style == "Simple" then
+        UI.avatar.ensure()
+        local text = "NECROTOOL.LUA\n[GS]"
+        local tw, th = renderer.measure_text("", text)
+        local IMG = 32
+        local px = 5
+        local py = screen_y / 2
+        if UI.avatar.tex then
+            py = py - IMG / 2
+            pcall(renderer.texture, UI.avatar.tex, px, py, IMG, IMG, 255, 255, 255, watermark_alpha, "f")
+            px = px + IMG + 5
+            py = py + (IMG - th) / 2
+        else
+            py = py - th / 2
+        end
+        renderer.text(px + 1, py + 1, 0, 0, 0, watermark_alpha * 0.8, "", 0, text)
+        renderer.text(px, py, 255, 255, 255, watermark_alpha, "", 0, text)
+        return
     end
 
     -- Lavender style: one-to-one look of the lavender_solus watermark
