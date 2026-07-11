@@ -312,12 +312,15 @@ end
 media.hitmarker_names = {"Default cross"}
 media.hitmarker_files = {}
 do
-    -- writing a file into the folder creates the folder on first launch
-    pcall(writefile, "csgo/materials/hitmarker/readme.txt", "Put your .png / .jpg hitmarker images in this folder, then pick them in necrotool.")
-
     local hm_path = char_buffer(160)
     current_directory(hm_path, ffi.sizeof(hm_path))
     hm_path = string.format("%s\\csgo\\materials\\hitmarker", ffi.string(hm_path))
+
+    -- create the folder via WinAPI (writefile does not create directories)
+    pcall(ffi.cdef, "int CreateDirectoryA(const char* path, void* sec);")
+    pcall(function() ffi.C.CreateDirectoryA(hm_path, nil) end)
+    pcall(writefile, "csgo/materials/hitmarker/readme.txt", "Put your .png / .jpg hitmarker images in this folder, then pick them in necrotool.")
+
     add_to_searchpath(hm_path, "HITMARKER", 0)
 
     local handle = int_ptr()
@@ -464,8 +467,11 @@ UI.hitmarker_alpha = ui.new_slider("LUA", "A", "\aFFFFFFFF    Transparency\nhitm
 UI.hitmarker_duration = ui.new_slider("LUA", "A", "\aFFFFFFFF    Duration\nhitmarker", 1, 30, 6, true, "s", 0.1)
 UI.hitmarker_color = ui.new_color_picker("LUA", "A", "\aFFFFFFFF    Color\nhitmarker", 255, 255, 255, 255)
 
--- hitmarker runtime: image cache + last-hit time, drawn at the crosshair on hit
-UI.hm = { last_hit = 0, cache = {} }
+-- hitmarker runtime: image cache + world-space markers placed where the shot
+-- landed on the enemy (frozen at hit position: leg -> leg, head -> head, ...)
+UI.hm = { pending = {}, markers = {}, cache = {} }
+-- rough hitgroup -> hitbox map used only as a fallback when aim_fire has no coords
+UI.hm.hg_to_hb = {[0] = 6, [1] = 0, [2] = 6, [3] = 3, [4] = 13, [5] = 14, [6] = 17, [7] = 18}
 
 function UI.hm.get_tex(fname)
     if UI.hm.cache[fname] ~= nil then
@@ -484,36 +490,70 @@ end
 
 function UI.hm.draw()
     if not ui.get(UI.enabled) or not ui.get(UI.hitmarker) then return end
+    local markers = UI.hm.markers
+    if #markers == 0 then return end
 
     local dur = ui.get(UI.hitmarker_duration) * 0.1
-    local elapsed = globals.realtime() - UI.hm.last_hit
-    if dur <= 0 or elapsed < 0 or elapsed > dur then return end
-
-    local fade = 1 - (elapsed / dur)
     local r, g, b = ui.get(UI.hitmarker_color)
-    local a = math.floor(ui.get(UI.hitmarker_alpha) * fade)
-    if a <= 0 then return end
-
-    local sx, sy = client.screen_size()
-    local cx, cy = sx / 2, sy / 2
+    local master = ui.get(UI.hitmarker_alpha)
     local size = ui.get(UI.hitmarker_size)
-
     local fname = media.hitmarker_files[ui.get(UI.hitmarker_image)]
     local tex = fname and UI.hm.get_tex(fname) or nil
 
-    if tex then
-        pcall(function()
-            tex:draw(math.floor(cx - size / 2), math.floor(cy - size / 2), size, size, r, g, b, a, false, "f")
-        end)
-    else
-        -- default cross hitmarker (four diagonal ticks)
-        local gp = size * 0.18
-        local ln = size * 0.5
-        renderer.line(cx - gp - ln, cy - gp - ln, cx - gp, cy - gp, r, g, b, a)
-        renderer.line(cx + gp + ln, cy - gp - ln, cx + gp, cy - gp, r, g, b, a)
-        renderer.line(cx - gp - ln, cy + gp + ln, cx - gp, cy + gp, r, g, b, a)
-        renderer.line(cx + gp + ln, cy + gp + ln, cx + gp, cy + gp, r, g, b, a)
+    for i = #markers, 1, -1 do
+        local m = markers[i]
+        local elapsed = globals.realtime() - m.spawn
+        if dur <= 0 or elapsed > dur then
+            table.remove(markers, i)
+        else
+            local a = math.floor(master * (1 - elapsed / dur))
+            if a > 0 then
+                local sx, sy = renderer.world_to_screen(m.x, m.y, m.z)
+                if sx and sy then
+                    if tex then
+                        pcall(function()
+                            tex:draw(math.floor(sx - size / 2), math.floor(sy - size / 2), size, size, r, g, b, a, false, "f")
+                        end)
+                    else
+                        local gp = size * 0.18
+                        local ln = size * 0.5
+                        renderer.line(sx - gp - ln, sy - gp - ln, sx - gp, sy - gp, r, g, b, a)
+                        renderer.line(sx + gp + ln, sy - gp - ln, sx + gp, sy - gp, r, g, b, a)
+                        renderer.line(sx - gp - ln, sy + gp + ln, sx - gp, sy + gp, r, g, b, a)
+                        renderer.line(sx + gp + ln, sy + gp + ln, sx + gp, sy + gp, r, g, b, a)
+                    end
+                end
+            end
+        end
     end
+end
+
+-- record where each shot is predicted to land, then freeze a marker there on hit
+function UI.hm.on_fire(e)
+    if not (ui.get(UI.enabled) and ui.get(UI.hitmarker)) then return end
+    if e and e.id and e.x and e.y and e.z then
+        UI.hm.pending[e.id] = {x = e.x, y = e.y, z = e.z}
+    end
+end
+
+function UI.hm.on_hit(e)
+    if not (ui.get(UI.enabled) and ui.get(UI.hitmarker)) then return end
+    local x, y, z
+    local p = e and e.id and UI.hm.pending[e.id]
+    if p then
+        x, y, z = p.x, p.y, p.z
+        UI.hm.pending[e.id] = nil
+    elseif e and e.target then
+        -- fallback: world position of the hit hitbox on the target
+        x, y, z = entity.hitbox_position(e.target, UI.hm.hg_to_hb[e.hitgroup] or 6)
+    end
+    if x and y and z then
+        UI.hm.markers[#UI.hm.markers + 1] = {x = x, y = y, z = z, spawn = globals.realtime()}
+    end
+end
+
+function UI.hm.on_miss(e)
+    if e and e.id then UI.hm.pending[e.id] = nil end
 end
 
 -- rinnegan-style "Setup" rows for the World features (grey = off, accent = on)
@@ -6518,12 +6558,10 @@ apply_fps_boost = function()
 end
 
 client.set_event_callback('aim_hit', on_aim_hit)
--- trigger the hitmarker at the crosshair whenever a shot lands
-client.set_event_callback('aim_hit', function()
-    if ui.get(UI.enabled) and ui.get(UI.hitmarker) then
-        UI.hm.last_hit = globals.realtime()
-    end
-end)
+-- world-space hitmarker: freeze a marker where the shot lands on the enemy
+client.set_event_callback('aim_fire', UI.hm.on_fire)
+client.set_event_callback('aim_hit', UI.hm.on_hit)
+client.set_event_callback('aim_miss', UI.hm.on_miss)
 client.set_event_callback('aim_miss', on_aim_miss)
 client.set_event_callback('player_hurt', on_player_hurt)
 client.set_event_callback('player_death', on_player_death)
