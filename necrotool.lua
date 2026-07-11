@@ -2221,6 +2221,9 @@ local CONFIG_SKIP = {
     -- helper tables / functions (not UI references)
     setup_jump = true, _update_visibility = true, win_interface = true,
     su_off = true, su_on = true, hm = true, lav = true, avatar = true, setup = true,
+    -- Rage tab info labels (not saveable; the checkboxes above them ARE saved)
+    jump_scout_info = true, aimbot_helper_info = true,
+    ideal_tick_info = true, unsafe_recharge_info = true,
 }
 
 local function get_all_settings()
