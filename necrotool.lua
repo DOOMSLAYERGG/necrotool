@@ -594,7 +594,7 @@ UI.setup_focus = ui.new_combobox("LUA", "A", "\aFFFFFFFF  setup focus", {
     "Fog", "Wall color", "Bloom", "Exposure", "Model brightness", "Smooth animation", "Smooth camera",
     "Model changer", "Hit sound", "Death sound", "Viewmodel", "Console color", "Aspect ratio", "Thirdperson", "Skybox", "FOV override",
     "Clantag", "Watermark", "Spectators", "Keybinds", "Indicators",
-    "Miss log", "First person nade", "FPS Boost", "Warmup",
+    "Miss log", "First person nade", "FPS Boost", "Warmup", "Animation breaker",
     "Jump scout helper", "Aimbot helper", "Ideal tick", "Unsafe exploit recharge"
 })
 ui.set_visible(UI.setup_focus, false)
@@ -605,7 +605,7 @@ end
 
 -- rinnegan-style "Setup" rows for the Misc features (grey = off, accent = on)
 do
-    local names = {"Clantag", "Watermark", "Spectators", "Keybinds", "Indicators", "Miss log", "First person nade", "FPS Boost", "Warmup"}
+    local names = {"Clantag", "Watermark", "Spectators", "Keybinds", "Indicators", "Miss log", "First person nade", "FPS Boost", "Warmup", "Animation breaker"}
     for _, nm in ipairs(names) do
         UI.su_off[nm] = ui.new_button("LUA", "A", "\aC8C8C8C8 Setup " .. nm, function() UI.setup_jump(nm) end)
         UI.su_on[nm]  = ui.new_button("LUA", "A", "\aB9BEFFFF Setup " .. nm, function() UI.setup_jump(nm) end)
@@ -656,6 +656,14 @@ UI.fps_boost_options = ui.new_multiselect("LUA", "A", "\aFFFFFFFF    Options", {
 UI.warmup_divider = ui.new_label("LUA", "A", "\aFFFFFFFF  ────────────────────")
 UI.warmup_warning = ui.new_label("LUA", "A", "\aFFD700FF  only local server")
 UI.warmup_helper = ui.new_checkbox("LUA", "A", "\aFFFFFFFF  Warmup Assistant")
+
+-- Animation breaker (Misc, ported from EmberLash v3). Manipulates the local
+-- player's animation pose parameters / layers to desync the on-screen anims.
+UI.anim_breaker        = ui.new_checkbox("LUA", "A", "\aFFFFFFFF  Animation breaker")
+UI.anim_breaker_moving = ui.new_combobox("LUA", "A", "\aFFFFFFFF    Moving", {"Off", "Static", "Jitter"})
+UI.anim_breaker_air    = ui.new_combobox("LUA", "A", "\aFFFFFFFF    In air", {"Off", "Static", "Jitter", "Walking"})
+UI.anim_breaker_addons = ui.new_multiselect("LUA", "A", "\aFFFFFFFF    Add-ons",
+    {"Disable balance adjustment", "Smooth yaw angles", "Smooth player animation"})
 
 -- ===== Rage tab (features ported/adapted from EmberLash v3) =====
 UI.jump_scout          = ui.new_checkbox("LUA", "A", "\aFFFFFFFF  Jump scout helper")
@@ -1626,6 +1634,7 @@ local function update_visibility_misc()
     row("First person nade", ui.get(UI.first_person_nade))
     row("FPS Boost", ui.get(UI.fps_boost))
     row("Warmup", ui.get(UI.warmup_helper))
+    row("Animation breaker", ui.get(UI.anim_breaker))
 
     -- the enable toggle + settings are shown only for the focused feature
     ui.set_visible(UI.clantag, f_clantag)
@@ -1667,6 +1676,13 @@ local function update_visibility_misc()
     ui.set_visible(UI.warmup_helper, f_warmup)
     ui.set_visible(UI.warmup_divider, f_warmup)
     ui.set_visible(UI.warmup_warning, f_warmup)
+
+    local f_animbreak = is_misc and focus == "Animation breaker"
+    local anim_breaker_enabled = ui.get(UI.anim_breaker)
+    ui.set_visible(UI.anim_breaker, f_animbreak)
+    ui.set_visible(UI.anim_breaker_moving, f_animbreak and anim_breaker_enabled)
+    ui.set_visible(UI.anim_breaker_air, f_animbreak and anim_breaker_enabled)
+    ui.set_visible(UI.anim_breaker_addons, f_animbreak and anim_breaker_enabled)
 
     local show_clantag_opts = f_clantag and clantag_enabled
     ui.set_visible(UI.clantag_style, show_clantag_opts)
@@ -1848,6 +1864,7 @@ end)
 ui.set_callback(UI.fps_boost_options, function()
     apply_fps_boost()
 end)
+ui.set_callback(UI.anim_breaker, function() update_visibility() end)
 ui.set_callback(UI.jump_scout, function() update_visibility() end)
 ui.set_callback(UI.aimbot_helper, function() update_visibility() end)
 ui.set_callback(UI.ideal_tick, function() update_visibility() end)
@@ -2739,6 +2756,97 @@ local function smooth_animation_pre_render()
             layer.weight = max(0, min(1, layer.weight))
         end
     end
+end
+
+-- ===== Animation breaker (ported/adapted from EmberLash v3) =====
+-- Uses the same gamesense/entity (c_entity) anim API the smooth-animation code
+-- relies on: get_anim_overlay(i) (.cycle/.weight/.sequence) and
+-- set_prop/get_prop("m_flPoseParameter", value, index). The neverlose
+-- leg_movement override is mapped to the gamesense reference when present, and
+-- the "Zero pitch on land" add-on is dropped because it needs neverlose-only
+-- anim_state fields (hit_in_ground_animation / magic_fraction). The whole thing
+-- is wrapped in pcall so a bad prop write can never break rendering.
+local anim_breaker = { yaw_i = 0, leg_ref = nil, leg_probed = false }
+local function animation_breaker_run()
+    if not ui.get(UI.enabled) or not ui.get(UI.anim_breaker) then return end
+
+    local me = entity.get_local_player()
+    if not me or not entity.is_alive(me) then return end
+
+    if not anim_breaker.leg_probed then
+        local ok, ref = pcall(ui.reference, "AA", "Movement", "Leg movement")
+        anim_breaker.leg_ref = ok and ref or nil
+        anim_breaker.leg_probed = true
+    end
+
+    pcall(function()
+        local self_index = c_entity.new(me)
+        local anim_state = self_index:get_anim_state()
+        if not anim_state then return end
+
+        local flags = entity.get_prop(me, "m_fFlags") or 0
+        local on_ground = bit.band(flags, 1) == 1
+        local vx, vy = entity.get_prop(me, "m_vecVelocity")
+        local speed = vx and math.sqrt(vx * vx + vy * vy) or 0
+        local e = (globals.realtime() * 0.5) % 1
+        local tick = globals.tickcount()
+
+        local moving = ui.get(UI.anim_breaker_moving)
+        local air = ui.get(UI.anim_breaker_air)
+        local addons = ui.get(UI.anim_breaker_addons) or {}
+        local function has(a)
+            for _, x in ipairs(addons) do if x == a then return true end end
+            return false
+        end
+
+        -- on-ground / moving breaker
+        if moving ~= "Off" and on_ground then
+            local q = 0
+            if anim_breaker.leg_ref and select(1, ui.get(anim_breaker.leg_ref)) == "Never slide" then q = 7 end
+            local H = (((tick % 4) > 1) and q) or 1
+            if moving == "Static" then
+                self_index:set_prop("m_flPoseParameter", 1, q)
+            elseif moving == "Jitter" then
+                if anim_breaker.leg_ref then
+                    pcall(ui.set, anim_breaker.leg_ref, (((tick % 3) == 0) and "Off") or "Always slide")
+                end
+                self_index:set_prop("m_flPoseParameter", (((tick % 4) > 1) and 0.5) or 1, H)
+                if speed < 1 then
+                    self_index:set_prop("m_flPoseParameter", client.random_float(0.4, 0.8), 7)
+                end
+            end
+        end
+
+        -- in-air breaker
+        if air ~= "Off" and not on_ground then
+            local h = (((tick % 4) > 1) and 7) or 6
+            if air == "Static" then
+                self_index:set_prop("m_flPoseParameter", 1, 6)
+            elseif air == "Jitter" then
+                self_index:set_prop("m_flPoseParameter", 1, h)
+            elseif air == "Walking" then
+                local o6, o7 = self_index:get_anim_overlay(6), self_index:get_anim_overlay(7)
+                if o6 then o6.weight = 1; o6.cycle = e end
+                if o7 then o7.cycle = e end
+            end
+        end
+
+        if has("Disable balance adjustment") then
+            local o3 = self_index:get_anim_overlay(3)
+            if o3 then o3.weight = 0; o3.cycle = 0; o3.sequence = 979 end
+        end
+        if has("Smooth yaw angles") then
+            local cur = self_index:get_prop("m_flPoseParameter", 11) or 0
+            anim_breaker.yaw_i = anim_breaker.yaw_i + (cur - anim_breaker.yaw_i) * 0.15
+            self_index:set_prop("m_flPoseParameter", anim_breaker.yaw_i, 11)
+        end
+        if has("Smooth player animation") then
+            local o12, o7, o6 = self_index:get_anim_overlay(12), self_index:get_anim_overlay(7), self_index:get_anim_overlay(6)
+            if o12 then o12.cycle = e end
+            if o7 then o7.cycle = e end
+            if o6 then o6.cycle = e end
+        end
+    end)
 end
 
 local function normalize_angle(angle)
@@ -6862,7 +6970,8 @@ client.set_event_callback('paint_ui', on_paint)
 client.set_event_callback('paint_ui', scope_paint_ui)
 client.set_event_callback('pre_render', function()
     smooth_animation_pre_render()
-    
+    animation_breaker_run()
+
     if not ui.get(UI.enabled) or not ui.get(UI.model_changer) then return end
     
     local me = entity.get_local_player()
