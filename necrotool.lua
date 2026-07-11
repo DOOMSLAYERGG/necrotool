@@ -471,8 +471,8 @@ UI.grenade_trail_glow_intensity = ui.new_slider("LUA", "A", "\aFFFFFFFF    Glow 
 UI.hitmarker = ui.new_checkbox("LUA", "A", "\aFFFFFFFF  Hitmarker")
 UI.hitmarker_image = ui.new_combobox("LUA", "A", "\aFFFFFFFF    Image\nhitmarker", media.hitmarker_names)
 UI.hitmarker_size = ui.new_slider("LUA", "A", "\aFFFFFFFF    Size\nhitmarker", 8, 400, 40)
-UI.hitmarker_alpha = ui.new_slider("LUA", "A", "\aFFFFFFFF    Transparency\nhitmarker", 0, 255, 255)
-UI.hitmarker_duration = ui.new_slider("LUA", "A", "\aFFFFFFFF    Duration\nhitmarker", 1, 30, 6, true, "s", 0.1)
+UI.hitmarker_alpha = ui.new_slider("LUA", "A", "\aFFFFFFFF    Transparency\nhitmarker", 0, 335, 335)
+UI.hitmarker_duration = ui.new_slider("LUA", "A", "\aFFFFFFFF    Duration\nhitmarker", 1, 150, 6, true, "s", 0.1)
 UI.hitmarker_color = ui.new_color_picker("LUA", "A", "\aFFFFFFFF    Color\nhitmarker", 255, 255, 255, 255)
 
 -- hitmarker runtime (luasensez-style): on aim_fire we queue the shot's impact
@@ -513,7 +513,7 @@ function UI.hm.draw()
         if dur <= 0 or elapsed > dur then
             table.remove(markers, i)
         else
-            local a = math.floor(master * (1 - elapsed / dur))
+            local a = math.min(255, math.floor(master * (1 - elapsed / dur)))
             if a > 0 then
                 local sx, sy = renderer.world_to_screen(m.x, m.y, m.z)
                 if sx and sy then
