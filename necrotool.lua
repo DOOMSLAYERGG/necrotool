@@ -647,6 +647,153 @@ UI.warmup_divider = ui.new_label("LUA", "A", "\aFFFFFFFF  ───────�
 UI.warmup_warning = ui.new_label("LUA", "A", "\aFFD700FF  only local server")
 UI.warmup_helper = ui.new_checkbox("LUA", "A", "\aFFFFFFFF  Warmup Assistant")
 
+-- ===== Rage tab (features ported/adapted from EmberLash v3) =====
+UI.jump_scout          = ui.new_checkbox("LUA", "A", "\aFFFFFFFF  Jump scout helper")
+UI.jump_scout_info     = ui.new_label("LUA", "A", "\aC8C8C8C8    Adjusts hit chance while airborne + scoped scout")
+UI.aimbot_helper       = ui.new_checkbox("LUA", "A", "\aFFFFFFFF  Aimbot helper")
+UI.aimbot_helper_info  = ui.new_label("LUA", "A", "\aC8C8C8C8    Prefers safe point / body aim while enabled")
+UI.ideal_tick          = ui.new_checkbox("LUA", "A", "\aFFFFFFFF  Ideal tick")
+UI.ideal_tick_key      = ui.new_hotkey("LUA", "A", "\aFFFFFFFF    Ideal tick key")
+UI.ideal_tick_opts     = ui.new_multiselect("LUA", "A", "\aFFFFFFFF    Ideal tick settings", {"Double tap", "Auto peek", "Freestanding"})
+UI.unsafe_recharge     = ui.new_checkbox("LUA", "A", "\aFFFFFFFF  Unsafe exploit recharge")
+UI.unsafe_recharge_info= ui.new_label("LUA", "A", "\aC8C8C8C8    Auto-recharges the double tap exploit")
+
+-- Rage-tab logic (ported/adapted from EmberLash v3, neverlose -> gamesense).
+-- Everything is guarded: references are pcall'd (a missing one just disables
+-- that piece, it can never break script load) and every override is restored
+-- when its feature turns off. Defined early inside one do-block so the helper
+-- locals stay block-scoped (out of the main chunk's 200-local budget) and the
+-- whole thing runs on a single setup_command callback.
+do
+    local function safe_ref(...)
+        local ok, a, b = pcall(ui.reference, ...)
+        if ok then return a, b end
+        return nil
+    end
+
+    local r_dt   = safe_ref("RAGE", "Aimbot", "Double tap")
+    local r_qpa  = safe_ref("RAGE", "Other", "Quick peek assist")
+    local r_fsp  = safe_ref("RAGE", "Aimbot", "Force safe point")
+    local r_fba  = safe_ref("RAGE", "Aimbot", "Force body aim")
+    local r_free = safe_ref("AA", "Anti-aimbot angles", "Freestanding")
+    local r_hc   = safe_ref("RAGE", "Aimbot", "Minimum hit chance")
+                   or safe_ref("RAGE", "Aimbot", "Minimum hitchance")
+
+    -- ---- Jump scout helper ----------------------------------------------
+    local js = { active = false, hc = nil }
+    local function js_restore()
+        if js.active and r_hc and js.hc ~= nil then pcall(ui.set, r_hc, js.hc) end
+        js.active, js.hc = false, nil
+    end
+    local function js_hc_by_dist(dist)
+        local c = math.min(dist, 1350)
+        return math.floor((55 - 22 * (c / 1350)) + 0.5)
+    end
+    local function jump_scout_run(me)
+        if not ui.get(UI.jump_scout) then js_restore() return end
+        local w = entity.get_player_weapon(me)
+        if not w or entity.get_classname(w) ~= "CWeaponSSG08" then js_restore() return end
+        if entity.get_prop(me, "m_bIsScoped") ~= 1 then js_restore() return end
+        local flags = entity.get_prop(me, "m_fFlags") or 0
+        if bit.band(flags, 1) == 1 then js_restore() return end  -- on ground
+        if not js.active then
+            if r_hc then js.hc = ui.get(r_hc) end
+            js.active = true
+        end
+        local hc = 60
+        local t = client.current_threat()
+        if t then
+            local x1, y1, z1 = entity.get_origin(me)
+            local x2, y2, z2 = entity.get_origin(t)
+            if x1 and x2 then
+                local dx, dy, dz = x1 - x2, y1 - y2, z1 - z2
+                local d = math.sqrt(dx*dx + dy*dy + dz*dz)
+                if d < 1350 then hc = js_hc_by_dist(d) end
+            end
+        end
+        if r_hc then pcall(ui.set, r_hc, hc) end
+    end
+
+    -- ---- Aimbot helper (prefer safe point while enabled) ----------------
+    local ah = { active = false, fsp = nil }
+    local function ah_run()
+        if ui.get(UI.aimbot_helper) then
+            if not ah.active and r_fsp then ah.fsp = ui.get(r_fsp); ah.active = true end
+            if r_fsp then pcall(ui.set, r_fsp, true) end
+        else
+            if ah.active and r_fsp and ah.fsp ~= nil then pcall(ui.set, r_fsp, ah.fsp) end
+            ah.active, ah.fsp = false, nil
+        end
+    end
+
+    -- ---- Ideal tick (hotkey-forced DT / auto peek / freestanding) -------
+    local it = { active = false, dt = nil, qpa = nil, free = nil }
+    local function it_has(opts, name)
+        for _, v in ipairs(opts) do if v == name then return true end end
+        return false
+    end
+    local function it_restore()
+        if it.active then
+            if r_dt   and it.dt   ~= nil then pcall(ui.set, r_dt, it.dt) end
+            if r_qpa  and it.qpa  ~= nil then pcall(ui.set, r_qpa, it.qpa) end
+            if r_free and it.free ~= nil then pcall(ui.set, r_free, it.free) end
+        end
+        it.active, it.dt, it.qpa, it.free = false, nil, nil, nil
+    end
+    local function ideal_tick_run()
+        if not ui.get(UI.ideal_tick) or not ui.get(UI.ideal_tick_key) then it_restore() return end
+        local opts = ui.get(UI.ideal_tick_opts) or {}
+        if not it.active then
+            if r_dt   then it.dt   = ui.get(r_dt) end
+            if r_qpa  then it.qpa  = ui.get(r_qpa) end
+            if r_free then it.free = ui.get(r_free) end
+            it.active = true
+        end
+        if it_has(opts, "Double tap")   and r_dt   then pcall(ui.set, r_dt, true) end
+        if it_has(opts, "Auto peek")    and r_qpa  then pcall(ui.set, r_qpa, true) end
+        if it_has(opts, "Freestanding") and r_free then pcall(ui.set, r_free, true) end
+    end
+
+    -- ---- Unsafe exploit recharge ----------------------------------------
+    -- EmberLash keeps the exploit charged via c.rage.aimbot.enabled:set_hotkey,
+    -- which gamesense does not expose. Closest safe analogue: after the exploit
+    -- has had time to recharge (14 ticks, 17 for the revolver), make sure the
+    -- double tap checkbox is on. It never pulses DT off mid-charge, so it can't
+    -- desync the ragebot.
+    local ur = { last = 0 }
+    local function unsafe_recharge_run(me)
+        if not ui.get(UI.unsafe_recharge) or not r_dt then return end
+        if not client.current_threat() then return end
+        local w = entity.get_player_weapon(me)
+        local ticks = (w and entity.get_classname(w) == "CWeaponRevolver") and 17 or 14
+        local tick = globals.tickcount()
+        if tick >= ur.last + ticks then
+            if ui.get(r_dt) ~= true then pcall(ui.set, r_dt, true) end
+            ur.last = tick
+        end
+    end
+
+    local function rage_setup_command()
+        if not ui.get(UI.enabled) then
+            js_restore(); it_restore()
+            if ah.active and r_fsp and ah.fsp ~= nil then pcall(ui.set, r_fsp, ah.fsp) end
+            ah.active, ah.fsp = false, nil
+            return
+        end
+        local me = entity.get_local_player()
+        if me and entity.is_alive(me) then
+            jump_scout_run(me)
+            unsafe_recharge_run(me)
+        else
+            js_restore()
+        end
+        ah_run()
+        ideal_tick_run()
+    end
+
+    client.set_event_callback('setup_command', rage_setup_command)
+end
+
 -- Forward declaration (функция определяется ниже, но используется в callback выше по коду)
 local handle_warmup_assistant
 local restore_warmup_defaults
@@ -1595,6 +1742,21 @@ local function update_visibility_world()
     ui.set_visible(UI.smooth_camera_roll, f_smoothcam and smooth_camera_enabled)
 end
 
+local function update_visibility_rage()
+    local enabled = ui.get(UI.enabled) and ui.get(UI.nav_open)
+    local is_rage = enabled and ui.get(UI.tab) == "Rage"
+
+    ui.set_visible(UI.jump_scout, is_rage)
+    ui.set_visible(UI.jump_scout_info, is_rage and ui.get(UI.jump_scout))
+    ui.set_visible(UI.aimbot_helper, is_rage)
+    ui.set_visible(UI.aimbot_helper_info, is_rage and ui.get(UI.aimbot_helper))
+    ui.set_visible(UI.ideal_tick, is_rage)
+    ui.set_visible(UI.ideal_tick_key, is_rage and ui.get(UI.ideal_tick))
+    ui.set_visible(UI.ideal_tick_opts, is_rage and ui.get(UI.ideal_tick))
+    ui.set_visible(UI.unsafe_recharge, is_rage)
+    ui.set_visible(UI.unsafe_recharge_info, is_rage and ui.get(UI.unsafe_recharge))
+end
+
 local function update_visibility()
     local enabled = ui.get(UI.enabled)
     local open = ui.get(UI.nav_open)
@@ -1612,6 +1774,7 @@ local function update_visibility()
     update_visibility_tracers_trails()
     update_visibility_world()
     update_visibility_misc()
+    update_visibility_rage()
     update_visibility_autobuy()
     update_visibility_changer()
     update_visibility_trashtalk()
@@ -1664,6 +1827,10 @@ end)
 ui.set_callback(UI.fps_boost_options, function()
     apply_fps_boost()
 end)
+ui.set_callback(UI.jump_scout, function() update_visibility() end)
+ui.set_callback(UI.aimbot_helper, function() update_visibility() end)
+ui.set_callback(UI.ideal_tick, function() update_visibility() end)
+ui.set_callback(UI.unsafe_recharge, function() update_visibility() end)
 ui.set_callback(UI.fog, update_visibility)
 ui.set_callback(UI.fog_style, update_visibility)
 ui.set_callback(UI.wall_color, update_visibility)
