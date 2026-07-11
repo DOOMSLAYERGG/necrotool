@@ -347,7 +347,7 @@ end
 
 local UI = {}
 UI.enabled = ui.new_checkbox("LUA", "A", "\aFFFFFFFF necrotool")
-UI.tab = ui.new_combobox("LUA", "A", "\aFFFFFFFF  Tab", {"Visuals", "World", "Changer", "Misc", "Autobuy", "Trashtalk", "Config"})
+UI.tab = ui.new_combobox("LUA", "A", "\aFFFFFFFF  Tab", {"Rage", "Visuals", "World", "Changer", "Misc", "Autobuy", "Trashtalk", "Config"})
 
 -- ===== Menu navigation buttons (Infinix-style) =====
 -- One button per tab: clicking it jumps straight to that tab's settings by
@@ -359,7 +359,7 @@ UI.nav_open = ui.new_checkbox("LUA", "A", "\aFFFFFFFF  nav open")
 ui.set_visible(UI.nav_open, false)
 UI.nav = {}
 do
-    local nav_tabs = {"Visuals", "World", "Changer", "Misc", "Autobuy", "Trashtalk", "Config"}
+    local nav_tabs = {"Rage", "Visuals", "World", "Changer", "Misc", "Autobuy", "Trashtalk", "Config"}
     for _, name in ipairs(nav_tabs) do
         UI.nav[name] = ui.new_button("LUA", "A", "\aB9BEFFFF » \aFFFFFFFF" .. name, function()
             ui.set(UI.tab, name)
