@@ -594,7 +594,8 @@ UI.setup_focus = ui.new_combobox("LUA", "A", "\aFFFFFFFF  setup focus", {
     "Fog", "Wall color", "Bloom", "Exposure", "Model brightness", "Smooth animation", "Smooth camera",
     "Model changer", "Hit sound", "Death sound", "Viewmodel", "Console color", "Aspect ratio", "Thirdperson", "Skybox", "FOV override",
     "Clantag", "Watermark", "Spectators", "Keybinds", "Indicators",
-    "Miss log", "First person nade", "FPS Boost", "Warmup"
+    "Miss log", "First person nade", "FPS Boost", "Warmup",
+    "Jump scout helper", "Aimbot helper", "Ideal tick", "Unsafe exploit recharge"
 })
 ui.set_visible(UI.setup_focus, false)
 UI.setup_jump = function(name)
@@ -605,6 +606,15 @@ end
 -- rinnegan-style "Setup" rows for the Misc features (grey = off, accent = on)
 do
     local names = {"Clantag", "Watermark", "Spectators", "Keybinds", "Indicators", "Miss log", "First person nade", "FPS Boost", "Warmup"}
+    for _, nm in ipairs(names) do
+        UI.su_off[nm] = ui.new_button("LUA", "A", "\aC8C8C8C8 Setup " .. nm, function() UI.setup_jump(nm) end)
+        UI.su_on[nm]  = ui.new_button("LUA", "A", "\aB9BEFFFF Setup " .. nm, function() UI.setup_jump(nm) end)
+    end
+end
+
+-- rinnegan-style "Setup" rows for the Rage features (grey = off, accent = on)
+do
+    local names = {"Jump scout helper", "Aimbot helper", "Ideal tick", "Unsafe exploit recharge"}
     for _, nm in ipairs(names) do
         UI.su_off[nm] = ui.new_button("LUA", "A", "\aC8C8C8C8 Setup " .. nm, function() UI.setup_jump(nm) end)
         UI.su_on[nm]  = ui.new_button("LUA", "A", "\aB9BEFFFF Setup " .. nm, function() UI.setup_jump(nm) end)
@@ -653,8 +663,7 @@ UI.jump_scout_info     = ui.new_label("LUA", "A", "\aC8C8C8C8    Adjusts hit cha
 UI.aimbot_helper       = ui.new_checkbox("LUA", "A", "\aFFFFFFFF  Aimbot helper")
 UI.aimbot_helper_info  = ui.new_label("LUA", "A", "\aC8C8C8C8    Prefers safe point / body aim while enabled")
 UI.ideal_tick          = ui.new_checkbox("LUA", "A", "\aFFFFFFFF  Ideal tick")
-UI.ideal_tick_key      = ui.new_hotkey("LUA", "A", "\aFFFFFFFF    Ideal tick key")
-UI.ideal_tick_opts     = ui.new_multiselect("LUA", "A", "\aFFFFFFFF    Ideal tick settings", {"Double tap", "Auto peek", "Freestanding"})
+UI.ideal_tick_info     = ui.new_label("LUA", "A", "\aC8C8C8C8    Forces Double tap + Auto peek while enabled")
 UI.unsafe_recharge     = ui.new_checkbox("LUA", "A", "\aFFFFFFFF  Unsafe exploit recharge")
 UI.unsafe_recharge_info= ui.new_label("LUA", "A", "\aC8C8C8C8    Auto-recharges the double tap exploit")
 
@@ -726,32 +735,24 @@ do
         end
     end
 
-    -- ---- Ideal tick (hotkey-forced DT / auto peek / freestanding) -------
-    local it = { active = false, dt = nil, qpa = nil, free = nil }
-    local function it_has(opts, name)
-        for _, v in ipairs(opts) do if v == name then return true end end
-        return false
-    end
+    -- ---- Ideal tick (forces Double tap + Auto peek while enabled) -------
+    local it = { active = false, dt = nil, qpa = nil }
     local function it_restore()
         if it.active then
-            if r_dt   and it.dt   ~= nil then pcall(ui.set, r_dt, it.dt) end
-            if r_qpa  and it.qpa  ~= nil then pcall(ui.set, r_qpa, it.qpa) end
-            if r_free and it.free ~= nil then pcall(ui.set, r_free, it.free) end
+            if r_dt  and it.dt  ~= nil then pcall(ui.set, r_dt, it.dt) end
+            if r_qpa and it.qpa ~= nil then pcall(ui.set, r_qpa, it.qpa) end
         end
-        it.active, it.dt, it.qpa, it.free = false, nil, nil, nil
+        it.active, it.dt, it.qpa = false, nil, nil
     end
     local function ideal_tick_run()
-        if not ui.get(UI.ideal_tick) or not ui.get(UI.ideal_tick_key) then it_restore() return end
-        local opts = ui.get(UI.ideal_tick_opts) or {}
+        if not ui.get(UI.ideal_tick) then it_restore() return end
         if not it.active then
-            if r_dt   then it.dt   = ui.get(r_dt) end
-            if r_qpa  then it.qpa  = ui.get(r_qpa) end
-            if r_free then it.free = ui.get(r_free) end
+            if r_dt  then it.dt  = ui.get(r_dt) end
+            if r_qpa then it.qpa = ui.get(r_qpa) end
             it.active = true
         end
-        if it_has(opts, "Double tap")   and r_dt   then pcall(ui.set, r_dt, true) end
-        if it_has(opts, "Auto peek")    and r_qpa  then pcall(ui.set, r_qpa, true) end
-        if it_has(opts, "Freestanding") and r_free then pcall(ui.set, r_free, true) end
+        if r_dt  then pcall(ui.set, r_dt, true) end
+        if r_qpa then pcall(ui.set, r_qpa, true) end
     end
 
     -- ---- Unsafe exploit recharge ----------------------------------------
@@ -1745,16 +1746,36 @@ end
 local function update_visibility_rage()
     local enabled = ui.get(UI.enabled) and ui.get(UI.nav_open)
     local is_rage = enabled and ui.get(UI.tab) == "Rage"
+    local focus = ui.get(UI.setup_focus)
+    local none = focus == "None"
 
-    ui.set_visible(UI.jump_scout, is_rage)
-    ui.set_visible(UI.jump_scout_info, is_rage and ui.get(UI.jump_scout))
-    ui.set_visible(UI.aimbot_helper, is_rage)
-    ui.set_visible(UI.aimbot_helper_info, is_rage and ui.get(UI.aimbot_helper))
-    ui.set_visible(UI.ideal_tick, is_rage)
-    ui.set_visible(UI.ideal_tick_key, is_rage and ui.get(UI.ideal_tick))
-    ui.set_visible(UI.ideal_tick_opts, is_rage and ui.get(UI.ideal_tick))
-    ui.set_visible(UI.unsafe_recharge, is_rage)
-    ui.set_visible(UI.unsafe_recharge_info, is_rage and ui.get(UI.unsafe_recharge))
+    -- "Setup <name>" rows: only on the tab landing (hidden once a feature is focused)
+    local function row(nm, ref)
+        local on = ui.get(ref)
+        ui.set_visible(UI.su_on[nm], is_rage and none and on)
+        ui.set_visible(UI.su_off[nm], is_rage and none and not on)
+    end
+    row("Jump scout helper", UI.jump_scout)
+    row("Aimbot helper", UI.aimbot_helper)
+    row("Ideal tick", UI.ideal_tick)
+    row("Unsafe exploit recharge", UI.unsafe_recharge)
+
+    -- the enable toggle + settings are shown only for the focused feature
+    local f_js = is_rage and focus == "Jump scout helper"
+    ui.set_visible(UI.jump_scout, f_js)
+    ui.set_visible(UI.jump_scout_info, f_js and ui.get(UI.jump_scout))
+
+    local f_ah = is_rage and focus == "Aimbot helper"
+    ui.set_visible(UI.aimbot_helper, f_ah)
+    ui.set_visible(UI.aimbot_helper_info, f_ah and ui.get(UI.aimbot_helper))
+
+    local f_it = is_rage and focus == "Ideal tick"
+    ui.set_visible(UI.ideal_tick, f_it)
+    ui.set_visible(UI.ideal_tick_info, f_it and ui.get(UI.ideal_tick))
+
+    local f_ur = is_rage and focus == "Unsafe exploit recharge"
+    ui.set_visible(UI.unsafe_recharge, f_ur)
+    ui.set_visible(UI.unsafe_recharge_info, f_ur and ui.get(UI.unsafe_recharge))
 end
 
 local function update_visibility()
