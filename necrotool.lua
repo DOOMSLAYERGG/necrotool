@@ -2019,14 +2019,28 @@ local function deserialize_table(str)
     return result
 end
 
+-- keys on the UI table that must NOT go through ui.get/ui.set: the config
+-- controls, the tab combobox, the internal nav state, and the helper tables /
+-- functions added by necrotool features (calling ui.get on those can abort the
+-- whole save). Everything else (checkboxes, sliders, combos, colors, incl.
+-- hitmarker + render image) is saved automatically.
+local CONFIG_SKIP = {
+    config_name = true, config_list = true, config_save = true, config_load = true,
+    config_delete = true, config_export = true, config_import = true, config_status = true,
+    tab = true,
+    -- internal navigation state
+    setup_focus = true, nav_open = true, nav_label = true, nav_back = true, nav = true,
+    -- helper tables / functions (not UI references)
+    setup_jump = true, _update_visibility = true, win_interface = true,
+    su_off = true, su_on = true, hm = true, lav = true, avatar = true, setup = true,
+}
+
 local function get_all_settings()
     local settings = {}
-    
+
     for key, ref in pairs(UI) do
-        if key ~= "config_name" and key ~= "config_list" and key ~= "config_save" and 
-           key ~= "config_load" and key ~= "config_delete" and key ~= "config_export" and 
-           key ~= "config_import" and key ~= "tab" then
-            
+        if not CONFIG_SKIP[key] then
+
             local success, r, g, b, a = pcall(ui.get, ref)
             if success then
                 -- Автоопределение color picker по СИГНАТУРЕ возврата (4 числа),
