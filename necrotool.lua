@@ -5011,10 +5011,26 @@ function UI.avatar.round(img, radius)
 end
 
 function UI.avatar.ensure()
+    -- in-game: read the steam64 straight off the local player
+    local s64
     local lp = entity.get_local_player()
-    if not lp then return end
+    if lp then
+        s64 = entity.get_steam64(lp)
+    end
 
-    local s64 = entity.get_steam64(lp)
+    -- main menu / no local player: fall back to the Steam persona API via
+    -- panorama (MyPersonaAPI.GetXuid), which returns the local user's xuid even
+    -- when not connected to a server. This is what makes the avatar show up in
+    -- the menu, mirroring the aesthetic_skeet "Simple" watermark.
+    if not s64 or s64 == 0 then
+        pcall(function()
+            local api = panorama.open()
+            if api and api.MyPersonaAPI then
+                s64 = api.MyPersonaAPI.GetXuid()
+            end
+        end)
+    end
+
     if not s64 or s64 == 0 then return end
     if UI.avatar.tex and UI.avatar.steam64 == s64 then return end
 
