@@ -312,11 +312,19 @@ end
 media.hitmarker_names = {"Default cross"}
 media.hitmarker_files = {}
 do
-    local hm_path = char_buffer(160)
-    current_directory(hm_path, ffi.sizeof(hm_path))
-    hm_path = string.format("%s\\csgo\\materials\\hitmarker", ffi.string(hm_path))
+    local root_buf = char_buffer(160)
+    current_directory(root_buf, ffi.sizeof(root_buf))
+    local game_root = ffi.string(root_buf)                       -- folder that contains csgo
+    local hm_path = string.format("%s\\csgo\\materials\\hitmarker", game_root)
 
-    -- create the folder via WinAPI (writefile does not create directories)
+    -- create the folder via the game's own filesystem, the same way Hysteria
+    -- does it: VFileSystem017::CreateDirHierarchy (vtable index 22), relative to
+    -- a search path we register at the game root. WinAPI + writefile as fallbacks.
+    pcall(function()
+        local create_dir = vmt_bind("filesystem_stdio.dll", "VFileSystem017", 22, "void(__thiscall*)(void*, const char*, const char*)")
+        add_to_searchpath(game_root, "NECRO_ROOT", 0)
+        create_dir("csgo/materials/hitmarker", "NECRO_ROOT")
+    end)
     pcall(ffi.cdef, "int CreateDirectoryA(const char* path, void* sec);")
     pcall(function() ffi.C.CreateDirectoryA(hm_path, nil) end)
     pcall(writefile, "csgo/materials/hitmarker/readme.txt", "Put your .png / .jpg hitmarker images in this folder, then pick them in necrotool.")
