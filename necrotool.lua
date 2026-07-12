@@ -2804,6 +2804,18 @@ local function animation_breaker_run()
     local me = entity.get_local_player()
     if not me or not entity.is_alive(me) then return end
 
+    -- Guard against the match -> main-menu teardown: while the local player
+    -- entity is being freed it can still briefly report "alive", but writing its
+    -- pose parameters / anim overlays then can crash the game (a native write a
+    -- pcall cannot catch). Only touch the animation state when the player is a
+    -- real, non-dormant, in-world entity: valid origin, a weapon, and >0 health.
+    if entity.is_dormant(me) then return end
+    if not entity.get_player_weapon(me) then return end
+    local ox = entity.get_origin(me)
+    if not ox then return end
+    local hp = entity.get_prop(me, "m_iHealth")
+    if not hp or hp <= 0 then return end
+
     if not anim_breaker.leg_probed then
         local ok, ref = pcall(ui.reference, "AA", "Movement", "Leg movement")
         anim_breaker.leg_ref = ok and ref or nil
