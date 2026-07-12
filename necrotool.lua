@@ -3890,8 +3890,29 @@ local function draw_kill_image()
         end
     end
 
-    local box_w = ui.get(UI.kill_image_size)
-    local box_h = box_w
+    -- keep the image's original aspect ratio: read the native pixel size from
+    -- the PNG IHDR header and fit it inside a `size`×`size` bounding box (the
+    -- Size slider controls the longest side), so wide/tall images are no longer
+    -- squashed into a square.
+    local size = ui.get(UI.kill_image_size)
+    local box_w, box_h = size, size
+    if file_data and #file_data >= 24 then
+        local function u32(o)
+            return file_data:byte(o) * 16777216 + file_data:byte(o + 1) * 65536
+                 + file_data:byte(o + 2) * 256 + file_data:byte(o + 3)
+        end
+        local iw, ih = u32(17), u32(21)
+        if iw > 0 and ih > 0 then
+            if iw >= ih then
+                box_w = size
+                box_h = math.floor(size * (ih / iw) + 0.5)
+            else
+                box_h = size
+                box_w = math.floor(size * (iw / ih) + 0.5)
+            end
+        end
+    end
+
     local box_x, box_y = kill_image_drag.drag(box_w, box_h)
 
     png:draw(box_x, box_y, box_w, box_h, 255, 255, 255, alpha, true, "f")
