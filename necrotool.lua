@@ -6741,10 +6741,8 @@ end
 local function on_paint()
     rainbow_hue = (rainbow_hue + globals.frametime() * 0.3) % 1.0
 
-    -- while the intro splash is playing, suppress every overlay below; the intro
-    -- itself is drawn by its own paint_ui callback registered LAST (see the end
-    -- of the file) so it renders on top of everything, including the cheat menu.
     if intro_animation.active then
+        draw_intro_animation()
         return
     end
 
@@ -7083,9 +7081,6 @@ end)
 -- also render in the main menu, not only in-game
 client.set_event_callback('paint_ui', on_paint)
 client.set_event_callback('paint_ui', scope_paint_ui)
--- registered LAST so the intro splash draws on top of every other paint_ui
--- layer (watermark, overlays) and the cheat menu itself
-client.set_event_callback('paint_ui', draw_intro_animation)
 client.set_event_callback('pre_render', function()
     smooth_animation_pre_render()
     animation_breaker_run()
