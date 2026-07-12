@@ -31,6 +31,11 @@ local state = {
 -- join t.me/femclub0
 -- ^^
 
+-- registry of every draggable overlay's hidden position sliders, keyed by the
+-- drag's unique name. These sliders live outside the UI table, so the config
+-- system saves/restores them explicitly (see get_all_settings/apply_settings)
+-- to remember where each overlay (incl. the render image) sits on screen.
+local drag_positions = {}
 local dragging_fn = function(name, base_x, base_y)
     local res = 10000
     local screen_x, screen_y = client.screen_size()
@@ -38,6 +43,7 @@ local dragging_fn = function(name, base_x, base_y)
     local y_slider = ui.new_slider("LUA", "A", name .. " y position", 0, res, base_y / screen_y * res)
     ui.set_visible(x_slider, false)
     ui.set_visible(y_slider, false)
+    drag_positions[name] = { x_slider = x_slider, y_slider = y_slider }
     
     local dragging = false
     local offset_x, offset_y = 0, 0
@@ -2270,7 +2276,18 @@ local function get_all_settings()
     
     
     settings.trashtalk_phrases = trashtalk.phrases
-    
+
+    -- overlay positions (render image, spectators, keybinds, …): stored as the
+    -- hidden sliders' normalised 0..res values so they restore at any resolution
+    settings.drag_positions = {}
+    for name, d in pairs(drag_positions) do
+        local ok_x, vx = pcall(ui.get, d.x_slider)
+        local ok_y, vy = pcall(ui.get, d.y_slider)
+        if ok_x and ok_y then
+            settings.drag_positions[name] = { vx, vy }
+        end
+    end
+
     return settings
 end
 
@@ -2284,6 +2301,17 @@ local function apply_settings(settings)
             trashtalk.death_pool = {}
             save_trashtalk_phrases()
             update_trashtalk_list()
+        elseif key == "drag_positions" then
+            -- restore each overlay's on-screen position (render image, etc.)
+            if type(value) == "table" then
+                for name, pos in pairs(value) do
+                    local d = drag_positions[name]
+                    if d and type(pos) == "table" and pos[1] and pos[2] then
+                        pcall(ui.set, d.x_slider, pos[1])
+                        pcall(ui.set, d.y_slider, pos[2])
+                    end
+                end
+            end
         elseif UI[key] then
             
             if type(value) == "table" then
