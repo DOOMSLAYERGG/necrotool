@@ -2277,15 +2277,16 @@ local function get_all_settings()
     
     settings.trashtalk_phrases = trashtalk.phrases
 
-    -- overlay positions (render image, spectators, keybinds, …): stored as the
-    -- hidden sliders' normalised 0..res values so they restore at any resolution
-    settings.drag_positions = {}
+    -- overlay positions (render image, spectators, keybinds, …): stored as FLAT
+    -- top-level keys (plain numbers) rather than a nested table, because the
+    -- native database serializer can silently drop deeply-nested tables — which
+    -- would take the whole config down with it. Values are the hidden sliders'
+    -- normalised 0..res coords so they restore at any resolution.
     for name, d in pairs(drag_positions) do
         local ok_x, vx = pcall(ui.get, d.x_slider)
         local ok_y, vy = pcall(ui.get, d.y_slider)
-        if ok_x and ok_y then
-            settings.drag_positions[name] = { vx, vy }
-        end
+        if ok_x and type(vx) == "number" then settings["__dragx_" .. name] = vx end
+        if ok_y and type(vy) == "number" then settings["__dragy_" .. name] = vy end
     end
 
     return settings
@@ -2295,23 +2296,21 @@ local function apply_settings(settings)
     if not settings then return false end
     
     for key, value in pairs(settings) do
+        local dragx = type(key) == "string" and key:match("^__dragx_(.+)$")
+        local dragy = type(key) == "string" and key:match("^__dragy_(.+)$")
         if key == "trashtalk_phrases" then
             trashtalk.phrases = value
             trashtalk.kill_pool = {}
             trashtalk.death_pool = {}
             save_trashtalk_phrases()
             update_trashtalk_list()
-        elseif key == "drag_positions" then
-            -- restore each overlay's on-screen position (render image, etc.)
-            if type(value) == "table" then
-                for name, pos in pairs(value) do
-                    local d = drag_positions[name]
-                    if d and type(pos) == "table" and pos[1] and pos[2] then
-                        pcall(ui.set, d.x_slider, pos[1])
-                        pcall(ui.set, d.y_slider, pos[2])
-                    end
-                end
-            end
+        elseif dragx then
+            -- restore an overlay's X position (render image, etc.)
+            local d = drag_positions[dragx]
+            if d and type(value) == "number" then pcall(ui.set, d.x_slider, value) end
+        elseif dragy then
+            local d = drag_positions[dragy]
+            if d and type(value) == "number" then pcall(ui.set, d.y_slider, value) end
         elseif UI[key] then
             
             if type(value) == "table" then
