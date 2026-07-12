@@ -389,7 +389,7 @@ end)
 UI.su_off = UI.su_off or {}
 UI.su_on  = UI.su_on or {}
 do
-    local names = {"Notifications", "Kill image", "Hit effect", "Healthbar", "Scope", "Tracers", "Trails", "Grenade trail", "Hitmarker", "Menu backdrop"}
+    local names = {"Notifications", "Kill image", "Hit effect", "Healthbar", "Scope", "Tracers", "Trails", "Grenade trail", "Hitmarker"}
     for _, nm in ipairs(names) do
         UI.su_off[nm] = ui.new_button("LUA", "A", "\aC8C8C8C8 Setup " .. nm, function() UI.setup_jump(nm) end)
         UI.su_on[nm]  = ui.new_button("LUA", "A", "\aB9BEFFFF Setup " .. nm, function() UI.setup_jump(nm) end)
@@ -480,10 +480,6 @@ UI.hitmarker_size = ui.new_slider("LUA", "A", "\aFFFFFFFF    Size\nhitmarker", 8
 UI.hitmarker_alpha = ui.new_slider("LUA", "A", "\aFFFFFFFF    Transparency\nhitmarker", 0, 335, 335)
 UI.hitmarker_duration = ui.new_slider("LUA", "A", "\aFFFFFFFF    Duration\nhitmarker", 1, 150, 6, true, "s", 0.1)
 UI.hitmarker_color = ui.new_color_picker("LUA", "A", "\aFFFFFFFF    Color\nhitmarker", 255, 255, 255, 255)
--- Menu backdrop: dims the game behind the cheat menu; the native menu and the
--- lua-drawn overlays/images stay bright because they draw on top of the dim.
-UI.menu_backdrop = ui.new_checkbox("LUA", "A", "\aFFFFFFFF  Menu backdrop")
-UI.menu_backdrop_alpha = ui.new_slider("LUA", "A", "\aFFFFFFFF    Darkness\nbackdrop", 0, 255, 180)
 
 -- hitmarker runtime (luasensez-style): on aim_fire we queue the shot's impact
 -- point in world space; every frame we project it with world_to_screen and draw
@@ -600,7 +596,7 @@ UI.smooth_camera_roll = ui.new_slider("LUA", "A", "\aFFFFFFFF    Camera roll", -
 -- settings (click again to collapse back to the list).
 UI.setup_focus = ui.new_combobox("LUA", "A", "\aFFFFFFFF  setup focus", {
     "None",
-    "Notifications", "Kill image", "Hit effect", "Healthbar", "Scope", "Tracers", "Trails", "Grenade trail", "Hitmarker", "Menu backdrop",
+    "Notifications", "Kill image", "Hit effect", "Healthbar", "Scope", "Tracers", "Trails", "Grenade trail", "Hitmarker",
     "Fog", "Wall color", "Bloom", "Exposure", "Model brightness", "Smooth animation", "Smooth camera",
     "Model changer", "Hit sound", "Death sound", "Viewmodel", "Console color", "Aspect ratio", "Thirdperson", "Skybox", "FOV override",
     "Clantag", "Watermark", "Spectators", "Keybinds", "Indicators",
@@ -1481,7 +1477,6 @@ local function update_visibility_visuals()
     row("Trails", UI.trails)
     row("Grenade trail", UI.grenade_trail)
     row("Hitmarker", UI.hitmarker)
-    row("Menu backdrop", UI.menu_backdrop)
 
     local f_notifications = is_visuals and focus == "Notifications"
     ui.set_visible(UI.notifications, f_notifications)
@@ -1520,10 +1515,6 @@ local function update_visibility_visuals()
     ui.set_visible(UI.hitmarker_alpha, f_hitmarker and hm_enabled)
     ui.set_visible(UI.hitmarker_duration, f_hitmarker and hm_enabled)
     ui.set_visible(UI.hitmarker_color, f_hitmarker and hm_enabled)
-
-    local f_backdrop = is_visuals and focus == "Menu backdrop"
-    ui.set_visible(UI.menu_backdrop, f_backdrop)
-    ui.set_visible(UI.menu_backdrop_alpha, f_backdrop and ui.get(UI.menu_backdrop))
 end
 
 local function update_visibility_hit_effect()
@@ -1883,7 +1874,6 @@ end)
 ui.set_callback(UI.fps_boost_options, function()
     apply_fps_boost()
 end)
-ui.set_callback(UI.menu_backdrop, function() update_visibility() end)
 ui.set_callback(UI.anim_breaker, function() update_visibility() end)
 ui.set_callback(UI.jump_scout, function() update_visibility() end)
 ui.set_callback(UI.aimbot_helper, function() update_visibility() end)
@@ -6750,12 +6740,14 @@ end
 
 local function on_paint()
     rainbow_hue = (rainbow_hue + globals.frametime() * 0.3) % 1.0
-    
+
+    -- while the intro splash is playing, suppress every overlay below; the intro
+    -- itself is drawn by its own paint_ui callback registered LAST (see the end
+    -- of the file) so it renders on top of everything, including the cheat menu.
     if intro_animation.active then
-        draw_intro_animation()
         return
     end
-    
+
     if ui.get(UI.enabled) and ui.get(UI.first_person_nade) then
         local me = entity.get_local_player()
         if me and entity.is_alive(me) then
@@ -6821,13 +6813,14 @@ local function on_paint()
     update_hit_particles()
     update_grenade_trails()
 
-    -- Menu backdrop: when the cheat menu is open, dim the game behind it. Drawn
-    -- BEFORE every lua overlay/image below, so the watermark, render image,
-    -- hitmarker, notifications etc. stay bright on top; the native gamesense
-    -- menu (drawn above all paint_ui) also stays bright.
-    if ui.get(UI.enabled) and ui.get(UI.menu_backdrop) and ui.is_menu_open() then
+    -- Menu backdrop (always on): when the cheat menu is open, dim the game
+    -- behind it using the same shade/strength as the intro splash (5,3,10 @220).
+    -- Drawn BEFORE every lua overlay/image below, so the watermark, render
+    -- image, hitmarker, notifications etc. stay bright on top; the native
+    -- gamesense menu (drawn above all paint_ui) also stays bright.
+    if ui.is_menu_open() then
         local sx, sy = client.screen_size()
-        renderer.rectangle(0, 0, sx, sy, 0, 0, 0, ui.get(UI.menu_backdrop_alpha))
+        renderer.rectangle(0, 0, sx, sy, 5, 3, 10, 220)
     end
 
     draw_notifications()
@@ -7090,6 +7083,9 @@ end)
 -- also render in the main menu, not only in-game
 client.set_event_callback('paint_ui', on_paint)
 client.set_event_callback('paint_ui', scope_paint_ui)
+-- registered LAST so the intro splash draws on top of every other paint_ui
+-- layer (watermark, overlays) and the cheat menu itself
+client.set_event_callback('paint_ui', draw_intro_animation)
 client.set_event_callback('pre_render', function()
     smooth_animation_pre_render()
     animation_breaker_run()
