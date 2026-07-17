@@ -3,6 +3,1967 @@ local images = require 'gamesense/images'
 
 local easing = require 'gamesense/easing'
 
+-- ============================================================================
+-- Embedded standalone modules (run once at load, each fully self-contained).
+--   1) GUI tab animations  - animates the native menu tab/content transitions
+--   2) Native GUI Russian   - hooks the menu text function to translate strings
+-- Both target specific game-build signatures/addresses and bail out safely via
+-- their own byte-checks if those don't match, so a wrong build just no-ops.
+-- Each is wrapped in its own function so (a) its internal top-level `return`s
+-- exit only that module, not necrotool, and (b) its many locals get an
+-- independent 200-local budget. Each call is pcall'd so any error is contained.
+-- The whole thing sits in a do-block so the two function-name locals are freed
+-- immediately and don't count against the main chunk's 200-local limit.
+-- ============================================================================
+do
+local function necro_module_menu_animations()
+local ffi = require 'ffi'
+local cast = ffi.cast
+
+local PAGE_EXECUTE_READWRITE = 0x40
+local MEM_COMMIT_RESERVE = 0x3000
+local CAVE_SIZE = 0x1000
+local MAX_ALPHA = 0xff
+local NO_TAB = 0xffffffff
+local HOVER_SLOT_COUNT = 16
+local HOVER_BASE_ALPHA = 0x64
+local HOVER_ACTIVE_ALPHA = 0xc8
+local HOVER_ALPHA_RANGE = HOVER_ACTIVE_ALPHA - HOVER_BASE_ALPHA
+local INCOMING_BASE_ALPHA = 0x64
+
+local ADDRESS = {
+    select_patch = 0x433B75F9,
+    select_return = 0x433B75FF,
+    draw_patch = 0x433AC656,
+    draw_return = 0x433AC676,
+    content_patch = 0x433AC782,
+    content_return = 0x433AC78D
+}
+
+local controls = {
+    enabled = ui.new_checkbox('LUA', 'B', 'Menu animations'),
+    tab_time = ui.new_slider('LUA', 'B', 'Icon animation', 40, 350, 350, true, 'ms'),
+    content_time = ui.new_slider('LUA', 'B', 'Tab animation', 40, 600, 250, true, 'ms')
+}
+
+local tab_time_ms = 350
+local content_time_ms = 250
+
+local function log_error(message)
+    client.error_log('GUI tab animation: ' .. message)
+end
+
+local function find_signature(module, pattern, offset)
+    local address = client.find_signature(module, pattern)
+
+    if not address then
+        return nil
+    end
+
+    return tonumber(cast('uintptr_t', address)) + (offset or 0)
+end
+
+local function read_import_target(call_site)
+    return cast('uint32_t**', cast('uint32_t', call_site) + 2)[0][0]
+end
+
+local function resolve_winapi()
+    local jmp_ecx = find_signature('engine.dll', '\xFF\xE1')
+    local get_proc_call = find_signature('engine.dll', '\xFF\x15\xCC\xCC\xCC\xCC\xA3\xCC\xCC\xCC\xCC\xEB\x05')
+    local get_module_call = find_signature('engine.dll', '\xFF\x15\xCC\xCC\xCC\xCC\x85\xC0\x74\x0B')
+
+    if not jmp_ecx or not get_proc_call or not get_module_call then
+        log_error('WinAPI resolver signatures failed')
+        return nil
+    end
+
+    local get_proc_address = read_import_target(get_proc_call)
+    local get_module_handle = read_import_target(get_module_call)
+
+    local call_get_proc_address = cast('uint32_t(__fastcall*)(unsigned int, unsigned int, uint32_t, const char*)', jmp_ecx)
+    local call_get_module_handle = cast('uint32_t(__fastcall*)(unsigned int, unsigned int, const char*)', jmp_ecx)
+    local call_virtual_protect = cast('int(__fastcall*)(unsigned int, unsigned int, void*, unsigned long, unsigned long, unsigned long*)', jmp_ecx)
+    local call_virtual_alloc = cast('void*(__fastcall*)(unsigned int, unsigned int, void*, unsigned long, unsigned long, unsigned long)', jmp_ecx)
+
+    local kernel32 = call_get_module_handle(get_module_handle, 0, 'kernel32.dll')
+    local virtual_protect = call_get_proc_address(get_proc_address, 0, kernel32, 'VirtualProtect')
+    local virtual_alloc = call_get_proc_address(get_proc_address, 0, kernel32, 'VirtualAlloc')
+
+    if virtual_protect == 0 or virtual_alloc == 0 then
+        log_error('VirtualProtect/VirtualAlloc resolve failed')
+        return nil
+    end
+
+    return {
+        protect = function(address, size, protection, old_protection)
+            return call_virtual_protect(virtual_protect, 0, address, size, protection, old_protection)
+        end,
+        alloc = function(size)
+            return call_virtual_alloc(virtual_alloc, 0, cast('void*', 0), size, MEM_COMMIT_RESERVE, PAGE_EXECUTE_READWRITE)
+        end
+    }
+end
+
+local winapi = resolve_winapi()
+
+if not winapi then
+    return
+end
+
+local function byte_array(values)
+    local buffer = ffi.new('uint8_t[?]', #values)
+
+    for i = 1, #values do
+        buffer[i - 1] = values[i]
+    end
+
+    return buffer
+end
+
+local function buffer_size(buffer)
+    return ffi.sizeof(buffer)
+end
+
+local function put_u32(buffer, offset, value)
+    if value < 0 then
+        value = value + 0x100000000
+    end
+
+    buffer[offset] = value % 0x100
+    value = math.floor(value / 0x100)
+    buffer[offset + 1] = value % 0x100
+    value = math.floor(value / 0x100)
+    buffer[offset + 2] = value % 0x100
+    value = math.floor(value / 0x100)
+    buffer[offset + 3] = value % 0x100
+end
+
+local function patch_u32(buffer, patches)
+    for i = 1, #patches do
+        put_u32(buffer, patches[i][1], patches[i][2])
+    end
+
+    return buffer
+end
+
+local function make_jmp(from_address, to_address, size)
+    local patch = ffi.new('uint8_t[?]', size)
+
+    patch[0] = 0xE9
+    put_u32(patch, 1, to_address - (from_address + 5))
+
+    for i = 5, size - 1 do
+        patch[i] = 0x90
+    end
+
+    return patch
+end
+
+local function bytes_equal(address, expected)
+    local ptr = cast('uint8_t*', address)
+
+    for i = 0, buffer_size(expected) - 1 do
+        if ptr[i] ~= expected[i] then
+            return false
+        end
+    end
+
+    return true
+end
+
+local function site_accepts_patch(address, original, patch)
+    if bytes_equal(address, original) or bytes_equal(address, patch) then
+        return true
+    end
+
+    return cast('uint8_t*', address)[0] == 0xE9
+end
+
+local old_protection = ffi.new('unsigned long[1]')
+
+local function write_bytes(address, data, size)
+    local ptr = cast('void*', address)
+
+    if winapi.protect(ptr, size, PAGE_EXECUTE_READWRITE, old_protection) == 0 then
+        return false
+    end
+
+    ffi.copy(ptr, data, size)
+    winapi.protect(ptr, size, old_protection[0], old_protection)
+
+    return true
+end
+
+local u32_buffer = ffi.new('uint32_t[1]')
+
+local function write_u32(address, value)
+    u32_buffer[0] = value
+    return write_bytes(address, u32_buffer, 4)
+end
+
+local original = {
+    select = byte_array({
+        0x89, 0x7E, 0x64, 0x8B, 0x46, 0x54
+    }),
+    draw = byte_array({
+        0x3B, 0xC1, 0x75, 0x07, 0x83, 0x4C, 0x24, 0x08,
+        0xFF, 0xEB, 0x15, 0x80, 0x7F, 0x16, 0x00, 0xBA,
+        0xFF, 0xFF, 0xFF, 0xC8, 0xB8, 0xFF, 0xFF, 0xFF,
+        0x64, 0x0F, 0x44, 0xD0, 0x89, 0x54, 0x24, 0x08
+    }),
+    content = byte_array({
+        0xFF, 0x75, 0x0C, 0x8B, 0x01, 0xFF, 0x75, 0x08,
+        0xFF, 0x50, 0x10
+    })
+}
+
+local cave_ptr = winapi.alloc(CAVE_SIZE)
+local cave_base = tonumber(cast('uintptr_t', cave_ptr))
+
+if not cave_base or cave_base == 0 then
+    log_error('VirtualAlloc failed')
+    return
+end
+
+local region = {
+    select = cave_base,
+    draw = cave_base + 0x080,
+    content = cave_base + 0x180,
+    state = cave_base + 0x300,
+    wrapper = cave_base + 0x400
+}
+
+local state_addr = {
+    menu = region.state,
+    old_tab = region.state + 0x04,
+    new_tab = region.state + 0x08,
+    progress = region.state + 0x0c,
+    content_progress = region.state + 0x10,
+    render_alpha = region.state + 0x14,
+    renderer_vtable = region.state + 0x18,
+    renderer_ready = region.state + 0x1c,
+    hover_down = region.state + 0x20,
+    hover_alpha = region.state + 0x60
+}
+
+local state = cast('uint32_t*', region.state)
+local tab_progress = cast('uint32_t*', state_addr.progress)
+local content_progress = cast('uint32_t*', state_addr.content_progress)
+local hover_down = cast('uint32_t*', state_addr.hover_down)
+local hover_alpha = cast('uint32_t*', state_addr.hover_alpha)
+
+local function reset_hover_state()
+    for i = 0, HOVER_SLOT_COUNT - 1 do
+        hover_down[i] = 0
+        hover_alpha[i] = HOVER_BASE_ALPHA
+    end
+end
+
+local function reset_state()
+    state[0] = 0
+    state[1] = NO_TAB
+    state[2] = NO_TAB
+    state[3] = MAX_ALPHA
+    state[4] = MAX_ALPHA
+    state[5] = MAX_ALPHA
+    state[6] = 0
+    state[7] = 0
+    reset_hover_state()
+end
+
+reset_state()
+
+local cave_code = {
+    select = patch_u32(byte_array({
+        0x89, 0x35, 0x11, 0x11, 0x11, 0x11,
+        0x8B, 0x46, 0x64,
+        0xA3, 0x22, 0x22, 0x22, 0x22,
+        0x89, 0x3D, 0x33, 0x33, 0x33, 0x33,
+        0xC7, 0x05, 0x44, 0x44, 0x44, 0x44,
+        MAX_ALPHA, 0x00, 0x00, 0x00,
+        0xC7, 0x05, 0x55, 0x55, 0x55, 0x55,
+        0x00, 0x00, 0x00, 0x00,
+        0x89, 0x7E, 0x64,
+        0x8B, 0x46, 0x54,
+        0x68, 0xFF, 0x75, 0x3B, 0x43,
+        0xC3
+    }), {
+        { 2, state_addr.menu },
+        { 10, state_addr.old_tab },
+        { 16, state_addr.new_tab },
+        { 22, state_addr.progress },
+        { 32, state_addr.content_progress },
+        { 47, ADDRESS.select_return }
+    }),
+    draw = patch_u32(byte_array({
+        0x80, 0x7F, 0x16, 0x00, 0xBA, 0xFF, 0xFF, 0xFF,
+        0xC8, 0xB8, 0xFF, 0xFF, 0xFF, 0x64, 0x0F, 0x44,
+        0xD0, 0x89, 0x54, 0x24, 0x08, 0x8B, 0x77, 0x0C,
+        0x83, 0xFE, HOVER_SLOT_COUNT, 0x73, 0x57, 0x8B, 0x47, 0x60,
+        0x8B, 0x40, 0x64, 0x39, 0xF0, 0x74, 0x4D, 0x80,
+        0x7F, 0x16, 0x00, 0x74, 0x18, 0xC7, 0x04, 0xB5,
+        0x11, 0x11, 0x11, 0x11, 0x01, 0x00, 0x00, 0x00,
+        0xC7, 0x04, 0xB5, 0x22, 0x22, 0x22, 0x22, HOVER_ACTIVE_ALPHA,
+        0x00, 0x00, 0x00, 0xEB, 0x15, 0x83, 0x3C, 0xB5,
+        0x11, 0x11, 0x11, 0x11, 0x00, 0x74, 0x0B, 0xC7,
+        0x04, 0xB5, 0x11, 0x11, 0x11, 0x11, 0x00, 0x00,
+        0x00, 0x00, 0x8B, 0x04, 0xB5, 0x22, 0x22, 0x22,
+        0x22, 0x83, 0xF8, HOVER_BASE_ALPHA, 0x76, 0x0E, 0xC1, 0xE0,
+        0x18, 0x0D, 0xFF, 0xFF, 0xFF, 0x00, 0x89, 0xC2,
+        0x89, 0x54, 0x24, 0x08, 0x8B, 0x47, 0x60, 0x3B,
+        0x05, 0x33,
+        0x33, 0x33, 0x33, 0x75, 0x60, 0x8B, 0x0D, 0x44,
+        0x44, 0x44, 0x44, 0x81, 0xF9, 0xFF, 0x00, 0x00,
+        0x00, 0x73, 0x52, 0x8B, 0x47, 0x0C, 0x3B, 0x05,
+        0x55, 0x55, 0x55, 0x55, 0x74, 0x0A, 0x3B, 0x05,
+        0x66, 0x66, 0x66, 0x66, 0x74, 0x18, 0xEB, 0x50,
+        0xB8, INCOMING_BASE_ALPHA, 0x00, 0x00, 0x00,
+        0xBA, 0xFF, 0x00, 0x00, 0x00, 0x29, 0xC2, 0x0F,
+        0xAF, 0xD1, 0xC1, 0xEA, 0x08, 0x01, 0xD0, 0xEB,
+        0x19, 0x89, 0xD0, 0xC1, 0xE8, 0x18, 0xBA, 0xFF,
+        0x00, 0x00, 0x00, 0x29, 0xC2, 0x0F, 0xAF, 0xD1,
+        0xC1, 0xEA, 0x08, 0xB8, 0xFF, 0x00, 0x00, 0x00,
+        0x29, 0xD0, 0xC1, 0xE0, 0x18, 0x0D, 0xFF, 0xFF,
+        0xFF, 0x00, 0x89, 0x44, 0x24, 0x08, 0xEB, 0x13,
+        0x8B, 0x47, 0x60, 0x8B, 0x40, 0x64, 0x3B, 0x47,
+        0x0C, 0x75, 0x08, 0xC7, 0x44, 0x24, 0x08, 0xFF,
+        0xFF, 0xFF, 0xFF, 0x68, 0x76, 0xC6, 0x3A, 0x43,
+        0xC3
+    }), {
+        { 48, state_addr.hover_down },
+        { 59, state_addr.hover_alpha },
+        { 72, state_addr.hover_down },
+        { 82, state_addr.hover_down },
+        { 93, state_addr.hover_alpha },
+        { 121, state_addr.menu },
+        { 129, state_addr.progress },
+        { 146, state_addr.new_tab },
+        { 154, state_addr.old_tab },
+        { 243, ADDRESS.draw_return }
+    }),
+    content = patch_u32(byte_array({
+        0x8B, 0x45, 0x08, 0x8B, 0x00, 0xA3, 0x66, 0x66,
+        0x66, 0x66, 0xA1, 0x22, 0x22, 0x22, 0x22, 0x3D,
+        0xFF, 0x00, 0x00, 0x00, 0x73, 0x2A, 0x85, 0xC0,
+        0x74, 0x4D, 0x8B, 0x57, 0x60, 0x3B, 0x15, 0x11,
+        0x11, 0x11, 0x11, 0x75, 0x1B, 0x8B, 0x57, 0x0C,
+        0x3B, 0x15, 0x33, 0x33, 0x33, 0x33, 0x75, 0x10,
+        0x83, 0x3D, 0x77, 0x77, 0x77, 0x77, 0x01, 0x75,
+        0x2E, 0xA3, 0x44, 0x44, 0x44, 0x44, 0xEB, 0x0A,
+        0xC7, 0x05, 0x44, 0x44, 0x44, 0x44, 0xFF, 0x00,
+        0x00, 0x00, 0xFF, 0x75, 0x0C, 0x8B, 0x01, 0xFF,
+        0x75, 0x08, 0xFF, 0x50, 0x10, 0x50, 0xC7, 0x05,
+        0x44, 0x44, 0x44, 0x44, 0xFF, 0x00, 0x00, 0x00,
+        0x58, 0x68, 0x8D, 0xC7, 0x3A, 0x43, 0xC3, 0xC7,
+        0x05, 0x44, 0x44, 0x44, 0x44, 0xFF, 0x00, 0x00,
+        0x00, 0x68, 0x8D, 0xC7, 0x3A, 0x43, 0xC3
+    }), {
+        { 6, state_addr.renderer_vtable },
+        { 11, state_addr.content_progress },
+        { 31, state_addr.menu },
+        { 42, state_addr.new_tab },
+        { 50, state_addr.renderer_ready },
+        { 58, state_addr.render_alpha },
+        { 66, state_addr.render_alpha },
+        { 88, state_addr.render_alpha },
+        { 98, ADDRESS.content_return },
+        { 105, state_addr.render_alpha },
+        { 114, ADDRESS.content_return }
+    })
+}
+
+ffi.copy(cast('void*', region.select), cave_code.select, buffer_size(cave_code.select))
+ffi.copy(cast('void*', region.draw), cave_code.draw, buffer_size(cave_code.draw))
+ffi.copy(cast('void*', region.content), cave_code.content, buffer_size(cave_code.content))
+
+local function append_u32(out, value)
+    if value < 0 then
+        value = value + 0x100000000
+    end
+
+    out[#out + 1] = value % 0x100
+    value = math.floor(value / 0x100)
+    out[#out + 1] = value % 0x100
+    value = math.floor(value / 0x100)
+    out[#out + 1] = value % 0x100
+    value = math.floor(value / 0x100)
+    out[#out + 1] = value % 0x100
+end
+
+local function emit(out, ...)
+    for i = 1, select('#', ...) do
+        out[#out + 1] = select(i, ...)
+    end
+end
+
+local function make_alpha_wrapper(original_func, color_offsets)
+    local out = {}
+
+    emit(out, 0x50, 0xA1)
+    append_u32(out, state_addr.render_alpha)
+    emit(out, 0x3D)
+    append_u32(out, MAX_ALPHA)
+
+    local skip_opcode = #out + 1
+    emit(out, 0x73, 0x00)
+
+    for i = 1, #color_offsets do
+        local color_offset = color_offsets[i]
+
+        emit(out, 0x8B, 0x44, 0x24, color_offset + 4)
+        emit(out, 0xC1, 0xE8, 0x18)
+        emit(out, 0x0F, 0xAF, 0x05)
+        append_u32(out, state_addr.render_alpha)
+        emit(out, 0xC1, 0xE8, 0x08)
+        emit(out, 0x88, 0x44, 0x24, color_offset + 7)
+    end
+
+    out[skip_opcode + 1] = #out - (skip_opcode + 1)
+    emit(out, 0x58, 0x68)
+    append_u32(out, original_func)
+    emit(out, 0xC3)
+
+    return byte_array(out)
+end
+
+local renderer_hooks = {
+    { offset = 0x10, colors = { 20 } },
+    { offset = 0x18, colors = { 20, 24 } },
+    { offset = 0x28, colors = { 28 } },
+    { offset = 0x3c, colors = { 12 } },
+    { offset = 0x5c, colors = { 12 } },
+    { offset = 0xa4, colors = { 20 } },
+    { offset = 0xa8, colors = { 20, 24 } }
+}
+
+local renderer_hooks_applied = false
+local renderer_hooks_failed_vtable = 0
+local renderer_vtable = 0
+local wrapper_offset = 0
+
+local function align_wrapper_offset()
+    local align = wrapper_offset % 16
+
+    if align ~= 0 then
+        wrapper_offset = wrapper_offset + 16 - align
+    end
+end
+
+local function restore_renderer_hooks()
+    state[5] = MAX_ALPHA
+    state[7] = 0
+    renderer_hooks_applied = false
+    renderer_hooks_failed_vtable = 0
+
+    if renderer_vtable == 0 then
+        return
+    end
+
+    local vtable = cast('uint32_t*', renderer_vtable)
+
+    for i = 1, #renderer_hooks do
+        local hook = renderer_hooks[i]
+        local index = hook.offset / 4
+
+        if hook.original and hook.wrapper and vtable[index] == hook.wrapper then
+            write_u32(renderer_vtable + hook.offset, hook.original)
+        end
+    end
+end
+
+local function apply_renderer_hooks()
+    if renderer_hooks_applied then
+        return true
+    end
+
+    local captured_vtable = tonumber(state[6])
+
+    if not captured_vtable or captured_vtable == 0 then
+        return true
+    end
+
+    if renderer_hooks_failed_vtable == captured_vtable then
+        return false
+    end
+
+    renderer_vtable = captured_vtable
+    local vtable = cast('uint32_t*', renderer_vtable)
+
+    for i = 1, #renderer_hooks do
+        local hook = renderer_hooks[i]
+        local index = hook.offset / 4
+
+        if not hook.original then
+            hook.original = tonumber(vtable[index])
+            hook.wrapper = region.wrapper + wrapper_offset
+
+            local wrapper = make_alpha_wrapper(hook.original, hook.colors)
+            ffi.copy(cast('void*', hook.wrapper), wrapper, buffer_size(wrapper))
+
+            wrapper_offset = wrapper_offset + buffer_size(wrapper)
+            align_wrapper_offset()
+        end
+
+        if vtable[index] ~= hook.wrapper and not write_u32(renderer_vtable + hook.offset, hook.wrapper) then
+            log_error('renderer hook write failed')
+            renderer_hooks_failed_vtable = captured_vtable
+            restore_renderer_hooks()
+            renderer_hooks_failed_vtable = captured_vtable
+            return false
+        end
+    end
+
+    renderer_hooks_applied = true
+    renderer_hooks_failed_vtable = 0
+    state[7] = 1
+    return true
+end
+
+local patch_sites = {
+    {
+        name = 'select',
+        address = ADDRESS.select_patch,
+        original = original.select,
+        patch = make_jmp(ADDRESS.select_patch, region.select, buffer_size(original.select)),
+        owns = false
+    },
+    {
+        name = 'draw',
+        address = ADDRESS.draw_patch,
+        original = original.draw,
+        patch = make_jmp(ADDRESS.draw_patch, region.draw, buffer_size(original.draw)),
+        owns = false
+    },
+    {
+        name = 'content',
+        address = ADDRESS.content_patch,
+        original = original.content,
+        patch = make_jmp(ADDRESS.content_patch, region.content, buffer_size(original.content)),
+        owns = false
+    }
+}
+
+local patched = false
+local last_time = globals.realtime()
+local last_tab_progress = MAX_ALPHA
+local last_content_progress = MAX_ALPHA
+local last_update_frame = -1
+
+local function reset_animation_progress()
+    last_time = globals.realtime()
+    last_tab_progress = MAX_ALPHA
+    last_content_progress = MAX_ALPHA
+    tab_progress[0] = MAX_ALPHA
+    content_progress[0] = MAX_ALPHA
+    state[5] = MAX_ALPHA
+    state[7] = 0
+    reset_hover_state()
+end
+
+local function rollback_patch_sites(from_index)
+    for i = from_index, 1, -1 do
+        local site = patch_sites[i]
+
+        if site.owns then
+            write_bytes(site.address, site.original, buffer_size(site.original))
+            site.owns = false
+        end
+    end
+end
+
+local function apply_patch()
+    if patched then
+        return true
+    end
+
+    for i = 1, #patch_sites do
+        local site = patch_sites[i]
+
+        if not site_accepts_patch(site.address, site.original, site.patch) then
+            log_error(site.name .. ' byte check failed')
+            return false
+        end
+    end
+
+    for i = 1, #patch_sites do
+        local site = patch_sites[i]
+
+        if not write_bytes(site.address, site.patch, buffer_size(site.original)) then
+            rollback_patch_sites(i - 1)
+            log_error(site.name .. ' patch write failed')
+            return false
+        end
+
+        site.owns = true
+    end
+
+    patched = true
+    reset_animation_progress()
+    return true
+end
+
+local function restore_patch()
+    restore_renderer_hooks()
+
+    for i = #patch_sites, 1, -1 do
+        local site = patch_sites[i]
+
+        if site.owns and bytes_equal(site.address, site.patch) then
+            write_bytes(site.address, site.original, buffer_size(site.original))
+        end
+
+        site.owns = false
+    end
+
+    patched = false
+    reset_animation_progress()
+end
+
+local function update_ui_state()
+    local is_enabled = ui.get(controls.enabled)
+    tab_time_ms = ui.get(controls.tab_time)
+    content_time_ms = ui.get(controls.content_time)
+
+    ui.set_visible(controls.tab_time, is_enabled)
+    ui.set_visible(controls.content_time, is_enabled)
+
+    if is_enabled then
+        apply_patch()
+    else
+        restore_patch()
+    end
+end
+
+local function add_progress(current, duration_ms, dt)
+    local add = math.floor(dt * 255000 / duration_ms + 0.5)
+
+    if add < 1 then
+        add = 1
+    end
+
+    local next_value = current + add
+    return next_value < MAX_ALPHA and next_value or MAX_ALPHA
+end
+
+local function subtract_hover_alpha(current, duration_ms, dt)
+    local sub = math.floor(dt * HOVER_ALPHA_RANGE * 1000 / duration_ms + 0.5)
+
+    if sub < 1 then
+        sub = 1
+    end
+
+    local next_value = current - sub
+    return next_value > HOVER_BASE_ALPHA and next_value or HOVER_BASE_ALPHA
+end
+
+local function update_animation()
+    if not patched then
+        return
+    end
+
+    if globals.framecount ~= nil then
+        local frame = globals.framecount()
+
+        if frame == last_update_frame then
+            return
+        end
+
+        last_update_frame = frame
+    end
+
+    apply_renderer_hooks()
+
+    local now = globals.realtime()
+    local current_tab_progress = tab_progress[0]
+    local current_content_progress = content_progress[0]
+
+    local tab_just_reset = current_tab_progress == 0 and last_tab_progress ~= 0
+    local content_just_reset = current_content_progress == 0 and last_content_progress ~= 0
+
+    if tab_just_reset or content_just_reset then
+        last_time = now
+        last_tab_progress = current_tab_progress
+        last_content_progress = current_content_progress
+        return
+    end
+
+    local dt = now - last_time
+    last_time = now
+
+    if dt <= 0 then
+        last_tab_progress = current_tab_progress
+        last_content_progress = current_content_progress
+        return
+    end
+
+    if current_tab_progress < MAX_ALPHA then
+        tab_progress[0] = add_progress(current_tab_progress, tab_time_ms, dt)
+    end
+
+    if current_content_progress < MAX_ALPHA then
+        content_progress[0] = add_progress(current_content_progress, content_time_ms, dt)
+    end
+
+    local hover_duration = tab_time_ms
+
+    for i = 0, HOVER_SLOT_COUNT - 1 do
+        if hover_down[i] == 0 and hover_alpha[i] > HOVER_BASE_ALPHA then
+            hover_alpha[i] = subtract_hover_alpha(hover_alpha[i], hover_duration, dt)
+        end
+    end
+
+    last_tab_progress = tab_progress[0]
+    last_content_progress = content_progress[0]
+end
+
+ui.set(controls.enabled, true)
+ui.set_callback(controls.enabled, update_ui_state)
+ui.set_callback(controls.tab_time, update_ui_state)
+ui.set_callback(controls.content_time, update_ui_state)
+
+client.set_event_callback('paint', update_animation)
+client.set_event_callback('paint_ui', update_animation)
+client.set_event_callback('shutdown', function() pcall(restore_patch) end)
+
+update_ui_state()
+end
+pcall(necro_module_menu_animations)
+
+local function necro_module_gui_russian()
+local ffi = require 'ffi'
+local cast = ffi.cast
+
+local PAGE_EXECUTE_READWRITE = 0x40
+local MEM_COMMIT_RESERVE = 0x3000
+local CAVE_SIZE = 0x80
+
+local QUEUE_RENDERER_VTABLE = 0x43472A80
+local TEXT_VFUNC_OFFSET = 0x3C
+local TEXT_VFUNC_ENTRY = QUEUE_RENDERER_VTABLE + TEXT_VFUNC_OFFSET
+local TEXT_FUNC_ADDR = 0x433E4A54
+
+local ASCII_BOUND_ADDR = 0x433F2562
+local MAX_TEXT_UNITS = 256
+
+local translate_text_t = ffi.typeof('const uint16_t*(__cdecl*)(const uint16_t*, uint32_t, uint32_t*)')
+
+local function signature(module, pattern)
+    local address = client.find_signature(module, pattern)
+    return address and tonumber(cast('uintptr_t', address)) or 0
+end
+
+local function import_target(call_site)
+    return cast('uint32_t**', cast('uint32_t', call_site) + 2)[0][0]
+end
+
+local function resolve_winapi()
+    local jmp_ecx = signature('engine.dll', '\xFF\xE1')
+    local get_proc_call = signature('engine.dll', '\xFF\x15\xCC\xCC\xCC\xCC\xA3\xCC\xCC\xCC\xCC\xEB\x05')
+    local get_module_call = signature('engine.dll', '\xFF\x15\xCC\xCC\xCC\xCC\x85\xC0\x74\x0B')
+
+    if jmp_ecx == 0 or get_proc_call == 0 or get_module_call == 0 then
+        return nil
+    end
+
+    local call_get_proc_addr = cast('uint32_t(__fastcall*)(unsigned int, unsigned int, uint32_t, const char*)', jmp_ecx)
+    local call_get_module_handle = cast('uint32_t(__fastcall*)(unsigned int, unsigned int, const char*)', jmp_ecx)
+    local call_virtual_protect = cast('int(__fastcall*)(unsigned int, unsigned int, void*, unsigned long, unsigned long, unsigned long*)', jmp_ecx)
+    local call_virtual_alloc = cast('void*(__fastcall*)(unsigned int, unsigned int, void*, unsigned long, unsigned long, unsigned long)', jmp_ecx)
+
+    local kernel32 = call_get_module_handle(import_target(get_module_call), 0, 'kernel32.dll')
+
+    if kernel32 == 0 then
+        return nil
+    end
+
+    local virtual_protect = call_get_proc_addr(import_target(get_proc_call), 0, kernel32, 'VirtualProtect')
+    local virtual_alloc = call_get_proc_addr(import_target(get_proc_call), 0, kernel32, 'VirtualAlloc')
+
+    if virtual_protect == 0 or virtual_alloc == 0 then
+        return nil
+    end
+
+    return {
+        protect = function(address, size, protection, old_protect)
+            return call_virtual_protect(virtual_protect, 0, cast('void*', address), size, protection, old_protect)
+        end,
+        alloc = function(size)
+            return call_virtual_alloc(virtual_alloc, 0, cast('void*', 0), size, MEM_COMMIT_RESERVE, PAGE_EXECUTE_READWRITE)
+        end
+    }
+end
+
+local winapi = resolve_winapi()
+
+if not winapi then
+    return
+end
+
+local old_protect = ffi.new('unsigned long[1]')
+local u32_buffer = ffi.new('uint32_t[1]')
+
+local function bytes(values)
+    local buffer = ffi.new('uint8_t[?]', #values)
+
+    for i = 1, #values do
+        buffer[i - 1] = values[i]
+    end
+
+    return buffer
+end
+
+local function put_u32(buffer, offset, value)
+    if value < 0 then
+        value = value + 0x100000000
+    end
+
+    buffer[offset] = value % 0x100
+    value = math.floor(value / 0x100)
+    buffer[offset + 1] = value % 0x100
+    value = math.floor(value / 0x100)
+    buffer[offset + 2] = value % 0x100
+    value = math.floor(value / 0x100)
+    buffer[offset + 3] = value % 0x100
+end
+
+local function bytes_match(address, data, size)
+    local current = cast('uint8_t*', address)
+
+    for i = 0, size - 1 do
+        if current[i] ~= data[i] then
+            return false
+        end
+    end
+
+    return true
+end
+
+local function write_bytes(address, data, size)
+    if winapi.protect(address, size, PAGE_EXECUTE_READWRITE, old_protect) == 0 then
+        return false
+    end
+
+    ffi.copy(cast('void*', address), data, size)
+    winapi.protect(address, size, old_protect[0], old_protect)
+
+    return true
+end
+
+local function read_u32(address)
+    return tonumber(cast('uint32_t*', address)[0]) or 0
+end
+
+local function write_u32(address, value)
+    u32_buffer[0] = value
+    return write_bytes(address, u32_buffer, 4)
+end
+
+local function push_utf16(units, codepoint)
+    if codepoint < 0x10000 then
+        units[#units + 1] = codepoint
+        return
+    end
+
+    codepoint = codepoint - 0x10000
+    units[#units + 1] = 0xD800 + math.floor(codepoint / 0x400)
+    units[#units + 1] = 0xDC00 + codepoint % 0x400
+end
+
+local function utf8_to_utf16(text)
+    local units = {}
+    local i = 1
+    local n = #text
+
+    while i <= n do
+        local c = text:byte(i)
+        local codepoint
+
+        if c < 0x80 then
+            codepoint = c
+            i = i + 1
+        elseif c < 0xE0 and i + 1 <= n then
+            codepoint = (c - 0xC0) * 0x40 + (text:byte(i + 1) - 0x80)
+            i = i + 2
+        elseif c < 0xF0 and i + 2 <= n then
+            codepoint = (c - 0xE0) * 0x1000 + (text:byte(i + 1) - 0x80) * 0x40 + (text:byte(i + 2) - 0x80)
+            i = i + 3
+        elseif i + 3 <= n then
+            codepoint = (c - 0xF0) * 0x40000 + (text:byte(i + 1) - 0x80) * 0x1000 + (text:byte(i + 2) - 0x80) * 0x40 + (text:byte(i + 3) - 0x80)
+            i = i + 4
+        else
+            codepoint = 0x3F
+            i = i + 1
+        end
+
+        push_utf16(units, codepoint)
+    end
+
+    local buffer = ffi.new('uint16_t[?]', #units + 1)
+
+    for j = 1, #units do
+        buffer[j - 1] = units[j]
+    end
+
+    buffer[#units] = 0
+
+    return {
+        buffer = buffer,
+        pointer = cast('const uint16_t*', buffer),
+        length = #units
+    }
+end
+
+local translations = {}
+local translation_text = {}
+local generated_translations = {}
+
+local function add(english, russian)
+    translation_text[english] = russian
+    translations[english] = utf8_to_utf16(russian)
+end
+
+local phrases = {
+    ['Native GUI Russian'] = 'Русский GUI',
+    ['Dump untranslated GUI text'] = 'Лог непереведенного GUI',
+
+    ['RAGE'] = 'РЕЙДЖ',
+    ['AA'] = 'АНТИ-АИМ',
+    ['LEGIT'] = 'ЛЕГИТ',
+    ['VISUALS'] = 'ВИЗУАЛЫ',
+    ['MISC'] = 'ПРОЧЕЕ',
+    ['SKINS'] = 'СКИНЫ',
+    ['PLAYERS'] = 'ИГРОКИ',
+    ['CONFIG'] = 'КОНФИГ',
+    ['LUA'] = 'ЛУА',
+
+    ['Aimbot'] = 'Аимбот',
+    ['Other'] = 'Другое',
+    ['Accuracy'] = 'Точность',
+    ['Anti-aim'] = 'Анти-аим',
+    ['Anti-aimbot angles'] = 'Анти-аим углы',
+    ['Fake lag'] = 'Фейк лаг',
+    ['Player ESP'] = 'ESP игроков',
+    ['Other ESP'] = 'Прочий ESP',
+    ['Colored models'] = 'Цветные модели',
+    ['Effects'] = 'Эффекты',
+    ['Miscellaneous'] = 'Разное',
+    ['Settings'] = 'Настройки',
+    ['Scripts'] = 'Скрипты',
+    ['Players'] = 'Игроки',
+    ['Skins'] = 'Скины',
+    ['Weapon'] = 'Оружие',
+    ['Weapons'] = 'Оружие',
+    ['Global'] = 'Общее',
+
+    ['Enabled'] = 'Включено',
+    ['Enable'] = 'Включить',
+    ['Disable'] = 'Выключить',
+    ['On'] = 'Вкл',
+    ['Off'] = 'Выкл',
+    ['Default'] = 'По умолчанию',
+    ['Always on'] = 'Всегда включено',
+    ['On hotkey'] = 'По клавише',
+    ['Off hotkey'] = 'Выкл. по клавише',
+    ['Toggle'] = 'Переключение',
+    ['Hold'] = 'Удержание',
+    ['None'] = 'Нет',
+    ['Never'] = 'Никогда',
+    ['Always'] = 'Всегда',
+    ['Auto'] = 'Авто',
+    ['Automatic'] = 'Автоматически',
+    ['Manual'] = 'Вручную',
+    ['Static'] = 'Статично',
+    ['Dynamic'] = 'Динамично',
+    ['Adaptive'] = 'Адаптивно',
+    ['Low'] = 'Низко',
+    ['Medium'] = 'Средне',
+    ['High'] = 'Высоко',
+    ['Maximum'] = 'Максимум',
+    ['Minimum'] = 'Минимум',
+    ['Normal'] = 'Обычно',
+    ['Fast'] = 'Быстро',
+    ['Slow'] = 'Медленно',
+    ['Left'] = 'Влево',
+    ['Right'] = 'Вправо',
+    ['Up'] = 'Вверх',
+    ['Down'] = 'Вниз',
+    ['Back'] = 'Назад',
+    ['Forward'] = 'Вперед',
+    ['Color'] = 'Цвет',
+    ['Style'] = 'Стиль',
+    ['Mode'] = 'Режим',
+    ['Type'] = 'Тип',
+    ['Amount'] = 'Сила',
+    ['Limit'] = 'Лимит',
+    ['Delay'] = 'Задержка',
+    ['Scale'] = 'Масштаб',
+    ['Size'] = 'Размер',
+    ['Alpha'] = 'Альфа',
+    ['Speed'] = 'Скорость',
+    ['Key'] = 'Клавиша',
+    ['Hotkey'] = 'Горячая клавиша',
+    ['Copy'] = 'Копировать',
+    ['Paste'] = 'Вставить',
+    ['Load'] = 'Загрузить',
+    ['Save'] = 'Сохранить',
+    ['Delete'] = 'Удалить',
+    ['Create'] = 'Создать',
+    ['Reset'] = 'Сбросить',
+    ['Refresh'] = 'Обновить',
+    ['Import'] = 'Импорт',
+    ['Export'] = 'Экспорт',
+    ['Rename'] = 'Переименовать',
+
+    ['Target selection'] = 'Выбор цели',
+    ['Target hitbox'] = 'Хитбокс цели',
+    ['Multi-point'] = 'Мультипоинт',
+    ['Multi-point scale'] = 'Масштаб мультипоинта',
+    ['Prefer safe point'] = 'Предпочитать сейфпоинт',
+    ['Force safe point'] = 'Форсить сейфпоинт',
+    ['Avoid unsafe hitboxes'] = 'Избегать опасных хитбоксов',
+    ['Automatic fire'] = 'Авто-стрельба',
+    ['Automatic penetration'] = 'Авто-пенетрация',
+    ['Silent aim'] = 'Тихий аим',
+    ['Minimum hit chance'] = 'Мин. шанс попадания',
+    ['Minimum damage'] = 'Мин. урон',
+    ['Minimum damage override'] = 'Переопределение мин. урона',
+    ['Automatic scope'] = 'Авто-прицел',
+    ['Reduce aim step'] = 'Снижать шаг аима',
+    ['Maximum FOV'] = 'Макс. FOV',
+    ['Log misses due to spread'] = 'Лог промахов из-за разброса',
+    ['Low FPS mitigations'] = 'Снижение нагрузки при низком FPS',
+    ['Remove recoil'] = 'Убрать отдачу',
+    ['Delay shot'] = 'Задержка выстрела',
+    ['Quick stop'] = 'Быстрая остановка',
+    ['Quick stop options'] = 'Опции быстрой остановки',
+    ['Double tap'] = 'Дабл тап',
+    ['Double tap mode'] = 'Режим дабл тапа',
+    ['Fake lag limit'] = 'Лимит фейк лага',
+    ['Accuracy boost'] = 'Буст точности',
+    ['Anti-aim correction'] = 'Коррекция анти-аима',
+    ['Resolver'] = 'Резольвер',
+    ['Correct anti-aim'] = 'Корректировать анти-аим',
+    ['Prefer body aim'] = 'Предпочитать боди-аим',
+    ['Force body aim'] = 'Форсить боди-аим',
+    ['Force body aim on peek'] = 'Форсить боди-аим на пике',
+    ['Force safe point on limbs'] = 'Форсить сейфпоинт по конечностям',
+    ['Hit chance'] = 'Шанс попадания',
+    ['Hitboxes'] = 'Хитбоксы',
+    ['Multipoint'] = 'Мультипоинт',
+    ['Head'] = 'Голова',
+    ['Chest'] = 'Грудь',
+    ['Stomach'] = 'Живот',
+    ['Arms'] = 'Руки',
+    ['Legs'] = 'Ноги',
+    ['Feet'] = 'Ступни',
+    ['Neck'] = 'Шея',
+    ['Pelvis'] = 'Таз',
+    ['Prefer'] = 'Предпочитать',
+    ['Nearest'] = 'Ближайшая',
+    ['Cycle'] = 'По циклу',
+    ['Highest damage'] = 'Макс. урон',
+    ['Best hit chance'] = 'Лучший шанс',
+
+    ['Pitch'] = 'Питч',
+    ['Yaw'] = 'Яв',
+    ['Yaw base'] = 'База ява',
+    ['Yaw jitter'] = 'Джиттер ява',
+    ['Body yaw'] = 'Яв тела',
+    ['Fake yaw limit'] = 'Лимит фейк ява',
+    ['Freestanding'] = 'Фристендинг',
+    ['Freestanding body yaw'] = 'Фристендинг ява тела',
+    ['Edge yaw'] = 'Яв от края',
+    ['Roll'] = 'Ролл',
+    ['On shot anti-aim'] = 'Анти-аим на выстреле',
+    ['Slow motion'] = 'Слоу-моушен',
+    ['Leg movement'] = 'Движение ног',
+    ['Fake duck'] = 'Фейк дак',
+    ['Fake peek'] = 'Фейк пик',
+    ['Lower body yaw target'] = 'Цель LBY',
+    ['At targets'] = 'На цели',
+    ['Local view'] = 'Локальный вид',
+    ['180'] = '180',
+    ['Spin'] = 'Спин',
+    ['Jitter'] = 'Джиттер',
+    ['Random'] = 'Случайно',
+
+    ['Name'] = 'Имя',
+    ['Bounding box'] = 'Рамка',
+    ['Health bar'] = 'Полоса здоровья',
+    ['Health'] = 'Здоровье',
+    ['Ammo'] = 'Патроны',
+    ['Flags'] = 'Флаги',
+    ['Weapon icon'] = 'Иконка оружия',
+    ['Weapon text'] = 'Название оружия',
+    ['Glow'] = 'Свечение',
+    ['Dormant'] = 'Дормант',
+    ['Skeleton'] = 'Скелет',
+    ['Backtrack'] = 'Бэктрек',
+    ['Out of FOV arrow'] = 'Стрелка вне FOV',
+    ['Visualize aimbot'] = 'Показывать аимбот',
+    ['Visualize damage'] = 'Показывать урон',
+    ['Bullet tracer'] = 'Трассер пули',
+    ['Bullet tracers'] = 'Трассеры пуль',
+    ['Bullet impacts'] = 'Следы пуль',
+    ['Hit marker'] = 'Хитмаркер',
+    ['Hit marker sound'] = 'Звук хитмаркера',
+    ['Damage indicator'] = 'Индикатор урона',
+    ['Spectators'] = 'Наблюдатели',
+    ['Dropped weapons'] = 'Оружие на земле',
+    ['Grenades'] = 'Гранаты',
+    ['Grenade prediction'] = 'Предикт гранат',
+    ['Molotov timer'] = 'Таймер молотова',
+    ['Bomb'] = 'Бомба',
+    ['Bomb timer'] = 'Таймер бомбы',
+    ['Radar'] = 'Радар',
+    ['Chams'] = 'Чамсы',
+    ['Player model'] = 'Модель игрока',
+    ['Enemy'] = 'Враг',
+    ['Enemies'] = 'Враги',
+    ['Team'] = 'Команда',
+    ['Teammates'] = 'Союзники',
+    ['Local player'] = 'Локальный игрок',
+    ['Visible'] = 'Видимый',
+    ['Hidden'] = 'Скрытый',
+    ['Occluded'] = 'За стеной',
+    ['History'] = 'История',
+    ['Attachments'] = 'Аттачменты',
+    ['Ragdolls'] = 'Рэгдоллы',
+    ['Hands'] = 'Руки',
+    ['Sleeves'] = 'Рукава',
+    ['Weapon viewmodel'] = 'Вьюмодель оружия',
+    ['Remove scope overlay'] = 'Убрать оверлей прицела',
+    ['Remove zoom'] = 'Убрать зум',
+    ['Remove flashbang effects'] = 'Убрать ослепление',
+    ['Remove smoke grenades'] = 'Убрать дым',
+    ['Remove fog'] = 'Убрать туман',
+    ['Remove skybox'] = 'Убрать скайбокс',
+    ['Night mode'] = 'Ночной режим',
+    ['World color'] = 'Цвет мира',
+    ['Prop color'] = 'Цвет пропов',
+    ['Skybox'] = 'Скайбокс',
+    ['Force third person'] = 'Форсить третье лицо',
+    ['Force third person (alive)'] = 'Третье лицо живым',
+    ['Third person distance'] = 'Дистанция третьего лица',
+    ['Viewmodel FOV'] = 'FOV вьюмодели',
+    ['Override FOV'] = 'Переопределить FOV',
+    ['Override zoom FOV'] = 'Переопределить FOV зума',
+    ['Aspect ratio'] = 'Соотношение сторон',
+    ['Spread circle'] = 'Круг разброса',
+    ['Recoil overlay'] = 'Оверлей отдачи',
+    ['Crosshair'] = 'Прицел',
+    ['Penetration crosshair'] = 'Прицел пенетрации',
+
+    ['Anti-untrusted'] = 'Анти-untrusted',
+    ['Automatic jump'] = 'Авто-прыжок',
+    ['Bunny hop'] = 'Банни-хоп',
+    ['Air strafe'] = 'Эйр-стрейф',
+    ['Auto strafe'] = 'Авто-стрейф',
+    ['Edge jump'] = 'Прыжок с края',
+    ['Duck jump'] = 'Дак-джамп',
+    ['Fast duck'] = 'Быстрый дак',
+    ['Slide walk'] = 'Слайд-волк',
+    ['Infinite duck'] = 'Бесконечный дак',
+    ['Menu key'] = 'Клавиша меню',
+    ['Menu color'] = 'Цвет меню',
+    ['Clan tag spammer'] = 'Клантег спаммер',
+    ['Chat spammer'] = 'Чат спаммер',
+    ['Reveal ranks'] = 'Показать ранги',
+    ['Reveal competitive ranks'] = 'Показать ранги MM',
+    ['Preserve killfeed'] = 'Сохранять киллфид',
+    ['Unlock inventory access'] = 'Разблокировать инвентарь',
+    ['Ping spike'] = 'Пинг спайк',
+    ['Fake latency'] = 'Фейк задержка',
+    ['sv_maxunlag'] = 'sv_maxunlag',
+    ['Event logs'] = 'Логи событий',
+    ['Draw console output'] = 'Показывать вывод консоли',
+    ['Watermark'] = 'Ватермарк',
+    ['Indicators'] = 'Индикаторы',
+
+    ['Knife'] = 'Нож',
+    ['Gloves'] = 'Перчатки',
+    ['Skin'] = 'Скин',
+    ['Paint kit'] = 'Покраска',
+    ['Seed'] = 'Сид',
+    ['Wear'] = 'Износ',
+    ['StatTrak'] = 'StatTrak',
+    ['Name tag'] = 'Именной ярлык',
+
+    ['Pistol'] = 'Пистолет',
+    ['Heavy pistol'] = 'Тяжелый пистолет',
+    ['SMG'] = 'ПП',
+    ['Rifle'] = 'Винтовка',
+    ['Shotgun'] = 'Дробовик',
+    ['Scout'] = 'Скаут',
+    ['AWP'] = 'AWP',
+    ['Auto sniper'] = 'Авто-снайперка',
+    ['Machine gun'] = 'Пулемет',
+    ['Zeus'] = 'Зевс',
+    ['Grenade'] = 'Граната',
+    ['C4'] = 'C4',
+
+    ['Auto peek'] = 'Авто-пик',
+    ['Quick peek assist'] = 'Помощь быстрого пика',
+    ['Damage override'] = 'Переопределение урона',
+    ['Safe point'] = 'Сейфпоинт',
+    ['Body aim'] = 'Боди-аим',
+    ['Hide shots'] = 'Скрывать выстрелы',
+    ['Teleport'] = 'Телепорт',
+    ['Recharge delay'] = 'Задержка перезаряда',
+    ['Predictive ticks'] = 'Тики предикта',
+    ['Resolver tickcount limit'] = 'Лимит тиков резольвера',
+
+    ['Menu fade'] = 'Фейд меню',
+    ['Menu animation mode'] = 'Режим анимации меню',
+    ['Fade time'] = 'Время фейда',
+    ['Fade'] = 'Фейд',
+    ['Book vertical'] = 'Книжка вертикально',
+    ['Force native header stripe'] = 'Форсить нативную полоску',
+    ['Header stripe left'] = 'Полоска слева',
+    ['Header stripe center'] = 'Полоска центр',
+    ['Header stripe right'] = 'Полоска справа',
+    ['Header stripe shadow'] = 'Тень полоски',
+    ['ESP glow'] = 'Свечение ESP',
+    ['Glow size'] = 'Размер свечения',
+    ['Glow alpha'] = 'Альфа свечения',
+    ['Hidden flags'] = 'Скрытые флаги',
+    ['Health color'] = 'Цвет здоровья',
+    ['Grenade warning old icon'] = 'Старая иконка гранаты',
+    ['Smooth Warning'] = 'Плавное предупреждение',
+    ['No shake'] = 'Без тряски',
+    ['Move bob'] = 'Тряска движения',
+    ['Jump bob'] = 'Тряска прыжка',
+    ['Override skybox'] = 'Переопределить скайбокс',
+    ['Remove 3D Sky'] = 'Убрать 3D небо'
+}
+
+for english, russian in pairs(phrases) do
+    add(english, russian)
+end
+
+local extra_phrases = {
+    ['Hit '] = 'Попал ',
+    ['Missed '] = 'Промах ',
+    [' ~ group: '] = ' ~ группа: ',
+    [' ~ damage: '] = ' ~ урон: ',
+    [' ~ reason: '] = ' ~ причина: ',
+    [' hp'] = ' хп',
+    ['spread'] = 'разброс',
+    ['stomach'] = 'живот',
+
+    ['Lua'] = 'Луа',
+    ['A'] = 'A',
+    ['B'] = 'B',
+    ['HC'] = 'HC',
+    ['RELOAD'] = 'RELOAD',
+    ['DEFUSE'] = 'DEFUSE',
+    ['BLIND'] = 'BLIND',
+    ['ZOOM'] = 'ZOOM',
+    ['VIP'] = 'VIP',
+    ['PIN'] = 'PIN',
+    ['HIT'] = 'HIT',
+    ['X 1'] = 'X 1',
+    ['X 2'] = 'X 2',
+    ['HK'] = 'HK',
+    ['FD'] = 'FD',
+    ['H'] = 'H',
+    ['K'] = 'K',
+    ['O'] = 'O',
+
+    ['Quick peek assist mode'] = 'Режим помощи быстрого пика',
+    ['Retreat on shot'] = 'Отходить после выстрела',
+    ['Quick peek assist distance'] = 'Дистанция быстрого пика',
+    ['Duck peek assist'] = 'Дак-пик ассист',
+    ['Limit targets per tick'] = 'Лимит целей за тик',
+    ['Prefer body aim disablers'] = 'Отключатели боди-аима',
+    ['Target shot fired'] = 'Цель выстрелила',
+    ['Target resolved'] = 'Цель зарезолвлена',
+    ['Safe point headshot'] = 'Хедшот через сейфпоинт',
+    ['Early'] = 'Ранний',
+    ['Move between shots'] = 'Двигаться между выстрелами',
+    ['Ignore molotov'] = 'Игнорировать молотов',
+    ['Defensive'] = 'Дефенсив',
+    ['Double tap hit chance'] = 'Шанс дабл тапа',
+    ['Double tap quick stop'] = 'Быстрая остановка дабл тапа',
+    ['Weapon type'] = 'Тип оружия',
+    ['Allow unsafe scripts'] = 'Разрешить небезопасные скрипты',
+    ['Reload active scripts'] = 'Перезагрузить активные скрипты',
+    ['Load on startup'] = 'Загружать при запуске',
+    ['Unload script'] = 'Выгрузить скрипт',
+    ['Presets'] = 'Пресеты',
+    ['Import from clipboard'] = 'Импорт из буфера',
+    ['Export to clipboard'] = 'Экспорт в буфер',
+    ['Adjustments'] = 'Настройки',
+    ['Add to whitelist'] = 'Добавить в whitelist',
+    ['Allow shared ESP updates'] = 'Разрешить обновления shared ESP',
+    ['Disable visuals'] = 'Отключить визуалы',
+    ['High priority'] = 'Высокий приоритет',
+    ['Force pitch'] = 'Форсить питч',
+    ['Force body yaw'] = 'Форсить яв тела',
+    ['Correction active'] = 'Коррекция активна',
+    ['Override prefer body aim'] = 'Переопределить prefer body aim',
+    ['Override safe point'] = 'Переопределить сейфпоинт',
+    ['Apply to all'] = 'Применить ко всем',
+    ['Reset all'] = 'Сбросить все',
+    ['Hitchance override'] = 'Переопределение hitchance',
+    ['Options'] = 'Опции',
+    ['Override hitchance'] = 'Переопределить hitchance',
+    ['Indicator text'] = 'Текст индикатора',
+    ['Quick peek auto stop'] = 'Автостоп быстрого пика',
+
+    ['Ragebot'] = 'Рейджбот',
+    ['Animations'] = 'Анимации',
+    ['Logging system'] = 'Система логов',
+    ['Automatic purchase'] = 'Автозакуп',
+    ['Builder'] = 'Билдер',
+    ['Features'] = 'Функции',
+    ['Hotkeys'] = 'Хоткеи',
+    ['Changers'] = 'Чейнджеры',
+    ['User interface'] = 'Интерфейс',
+    ['Hit markers'] = 'Хитмаркеры',
+    ['Configurations'] = 'Конфиги',
+
+    ['Force body condition'] = 'Условие боди-аима',
+    ['Force lethal'] = 'Форсить летал',
+    ['Auto hide shots'] = 'Авто hide shots',
+    ['Auto Snipers'] = 'Авто-снайперки',
+    ['Pistols'] = 'Пистолеты',
+    ['States'] = 'Состояния',
+    ['Standing'] = 'Стоя',
+    ['Slow Walk'] = 'Слоу-волк',
+    ['Crouch'] = 'Присед',
+    ['Move-Crouch'] = 'Движение-присед',
+    ['Allow duck on fd'] = 'Разрешить дак на FD',
+    ['Unsafe recharge'] = 'Небезопасная перезарядка',
+    ['Hideshots fix'] = 'Фикс hide shots',
+    ["Salvatore's quick switch"] = 'Быстрый свап Salvatore',
+    ['Visual recoil adjustment'] = 'Настройка визуальной отдачи',
+    ['Remove all'] = 'Убрать все',
+    ['Transparent walls'] = 'Прозрачные стены',
+    ['Transparent props'] = 'Прозрачные пропы',
+    ['Brightness adjustment'] = 'Настройка яркости',
+    ['Instant scope'] = 'Мгновенный прицел',
+    ['Disable post processing'] = 'Отключить постобработку',
+    ['Force third person (dead)'] = 'Третье лицо мертвым',
+    ['Disable rendering of teammates'] = 'Не рендерить союзников',
+    ['Disable rendering of ragdolls'] = 'Не рендерить рэгдоллы',
+    ['Modulate harmless molotovs'] = 'Модулировать безопасные молотовы',
+    ['Text'] = 'Текст',
+    ['Grenade trajectory'] = 'Траектория гранаты',
+    ['Grenade trajectory (hit)'] = 'Траектория гранаты (попадание)',
+    ['Grenade proximity warning'] = 'Предупреждение о близкой гранате',
+    ['Penetration reticle'] = 'Прицел пенетрации',
+    ['Hostages'] = 'Заложники',
+    ['Feature indicators'] = 'Индикаторы функций',
+    ['Shared ESP'] = 'Shared ESP',
+    ['Shared ESP with other team'] = 'Shared ESP с другой командой',
+    ['Restrict shared ESP updates'] = 'Ограничить обновления shared ESP',
+    ['Player'] = 'Игрок',
+    ['Player behind wall'] = 'Игрок за стеной',
+    ['Solid'] = 'Сплошной',
+    ['Teammate'] = 'Союзник',
+    ['Teammate behind wall'] = 'Союзник за стеной',
+    ['Local player transparency'] = 'Прозрачность локального игрока',
+    ['Local player fake'] = 'Фейк локального игрока',
+    ['On shot'] = 'На выстреле',
+    ['Original'] = 'Оригинал',
+    ['Disable model occlusion'] = 'Отключить occlusion моделей',
+    ['Shadow'] = 'Тень',
+    ['Props'] = 'Пропы',
+    ['Activation type'] = 'Тип активации',
+    ['Distance'] = 'Дистанция',
+    ['Visualize aimbot (safe point)'] = 'Показывать аимбот (сейфпоинт)',
+    ['Visualize sounds'] = 'Показывать звуки',
+    ['Money'] = 'Деньги',
+}
+
+for english, russian in pairs(extra_phrases) do
+    add(english, russian)
+end
+
+local more_phrases = {
+    ['Select'] = 'Выбрать',
+    ['Accent color'] = 'Акцентный цвет',
+    ['Secondary color'] = 'Вторичный цвет',
+    ['Keybinds'] = 'Бинды',
+    ['Flags indicator'] = 'Индикатор флагов',
+    ['Net graphic'] = 'График сети',
+    ['Console color'] = 'Цвет консоли',
+    ['Only if active'] = 'Только если активно',
+    ['Font'] = 'Шрифт',
+    ['Small'] = 'Маленький',
+    ['Offset'] = 'Смещение',
+    ['Active color'] = 'Активный цвет',
+    ['Inactive color'] = 'Неактивный цвет',
+    ['DPI scale'] = 'Масштаб DPI',
+    ['Low FPS warning'] = 'Предупреждение о низком FPS',
+    ['Movement'] = 'Движение',
+    ['Standalone quick stop'] = 'Отдельный quick stop',
+    ['Easy strafe'] = 'Легкий стрейф',
+    ['Air strafe direction'] = 'Направление air strafe',
+    ['View angles'] = 'Углы камеры',
+    ['Movement keys'] = 'Клавиши движения',
+    ['Air strafe smoothing'] = 'Сглаживание air strafe',
+    ['Avoid collisions'] = 'Избегать столкновений',
+    ['No fall damage'] = 'Без урона от падения',
+    ['Jump at edge'] = 'Прыжок на краю',
+    ['Knifebot'] = 'Ножебот',
+    ['Swing'] = 'Удар',
+    ['Full stab'] = 'Полный удар',
+    ['Automatic weapons'] = 'Автооружие',
+    ['Quick switch'] = 'Быстрый свап',
+    ['Automatic grenade release'] = 'Автовыпуск гранаты',
+    ['Minimum grenade damage'] = 'Мин. урон гранаты',
+    ['Super toss'] = 'Супер бросок',
+    ['Free look'] = 'Свободный обзор',
+    ['Persistent kill feed'] = 'Постоянный киллфид',
+    ['Last second defuse'] = 'Дефьюз в последнюю секунду',
+    ['Weapon skin'] = 'Скин оружия',
+    ['Quality'] = 'Качество',
+    ['Filter by weapon'] = 'Фильтр по оружию',
+    ['Model options'] = 'Опции модели',
+    ['Knife changer'] = 'Чейнджер ножа',
+    ['Glove changer'] = 'Чейнджер перчаток',
+    ['Mask changer'] = 'Чейнджер маски',
+    ['Agent changer'] = 'Чейнджер агента',
+    ['Primary'] = 'Основное',
+    ['Secondary'] = 'Вторичное',
+    ['Equipment'] = 'Снаряжение',
+    ['Kevlar'] = 'Броня',
+    ['Kevlar + Helmet'] = 'Броня + шлем',
+    ['Defuse kit'] = 'Дефьюз-кит',
+    ['HE'] = 'HE',
+    ['Smoke'] = 'Дым',
+    ['Molotov'] = 'Молотов',
+    ['Taser'] = 'Тазер',
+    ['Ignore pistol round'] = 'Игнорировать пистолетку',
+    ['Only $16k'] = 'Только $16k',
+    ['Target color'] = 'Цвет цели',
+    ['Other color'] = 'Другой цвет',
+    ['Death color'] = 'Цвет смерти',
+    ['Spread color'] = 'Цвет разброса',
+    ['Resolver color'] = 'Цвет резольвера',
+    ['Prediction error color'] = 'Цвет ошибки предикта',
+    ['Unregistered shot color'] = 'Цвет незарегистр. выстрела',
+    ['Events'] = 'События',
+    ['Output'] = 'Вывод',
+    ['Under crosshair'] = 'Под прицелом',
+    ['Event output'] = 'Вывод событий',
+    ['BT'] = 'BT',
+    ['Player name'] = 'Имя игрока',
+    ['Offset Y'] = 'Смещение Y',
+    ['Duration'] = 'Длительность',
+    ['Console text style'] = 'Стиль текста консоли',
+    ['Aesthetic'] = 'Эстетика',
+    ['Crosshair text style'] = 'Стиль текста прицела',
+    ['Air legs'] = 'Ноги в воздухе',
+    ['Weight'] = 'Вес',
+    ['Ground legs'] = 'Ноги на земле',
+    ['Offset 1'] = 'Смещение 1',
+    ['Offset 2'] = 'Смещение 2',
+    ['Clean menu'] = 'Чистое меню',
+    ['Fast ladder'] = 'Быстрая лестница',
+    ['Console filter'] = 'Фильтр консоли',
+    ['Icon notification'] = 'Уведомление с иконкой',
+    ['Sync ragebot hotkeys'] = 'Синхронизировать хоткеи рейджбота',
+    ['Reveal enemy team chat'] = 'Показывать чат врагов',
+    ['Setup local server'] = 'Настроить локальный сервер',
+    ['Drop nades'] = 'Выбрасывать гранаты',
+    ['Enhance grenade release'] = 'Улучшить выпуск гранаты',
+    ['Fps optimize'] = 'Оптимизация FPS',
+    ['Optimizations'] = 'Оптимизации',
+    ['Blood'] = 'Кровь',
+    ['Bloom'] = 'Блум',
+    ['Decals'] = 'Декали',
+    ['Shadows'] = 'Тени',
+    ['Sprites'] = 'Спрайты',
+    ['Particles'] = 'Частицы',
+    ['Ropes'] = 'Веревки',
+    ['Dynamic lights'] = 'Динамические источники света',
+    ['Map details'] = 'Детали карты',
+    ['Weapon effects'] = 'Эффекты оружия',
+    ['Arc interpolation'] = 'Интерполяция дуги',
+    ['Trash talk'] = 'Трэш-ток',
+    ['Clantag'] = 'Клантег',
+    ['Variance'] = 'Разброс',
+    ['Avoid backstab'] = 'Избегать удара в спину',
+    ['Break LC triggers'] = 'Ломать LC триггеры',
+    ['Flashed'] = 'Ослеплен',
+    ['Reloading'] = 'Перезарядка',
+    ['Taking damage'] = 'Получает урон',
+    ['Safe head'] = 'Сейф голова',
+    ['Conditions'] = 'Условия',
+    ['Air crouch knife'] = 'Нож в air crouch',
+    ['E Spam while active'] = 'E spam при активности',
+    ['Override spinner'] = 'Переопределить spinner',
+    ['Flick exploit'] = 'Flick exploit',
+    ['World modulation'] = 'Модуляция мира',
+    ['Light modulation'] = 'Модуляция света',
+    ['Third person'] = 'Третье лицо',
+    ['Zoom speed'] = 'Скорость зума',
+    ['Viewmodel'] = 'Вьюмодель',
+    ['Field of fov'] = 'Поле FOV',
+    ['Offset X'] = 'Смещение X',
+    ['Offset Z'] = 'Смещение Z',
+    ['Remove sleeves'] = 'Убрать рукава',
+    ['Custom scope'] = 'Кастомный прицел',
+    ['Force second zoom'] = 'Форсить второй зум',
+    ['Hitsound'] = 'Хитсаунд',
+    ['Body sound'] = 'Звук тела',
+    ['Arena switch'] = 'Переключение арены',
+    ['Head sound'] = 'Звук головы',
+    ['Volume'] = 'Громкость',
+    ['Damage marker'] = 'Маркер урона',
+    ['Screen marker'] = 'Маркер на экране',
+    ['World marker'] = 'Маркер в мире',
+    ['Default*'] = 'По умолчанию*',
+    ['Force'] = 'Форсить',
+    ['Jump scout'] = 'Прыжок со скаутом',
+    ['Air crouch'] = 'Присед в воздухе',
+}
+
+for english, russian in pairs(more_phrases) do
+    add(english, russian)
+end
+
+local third_phrases = {
+    ['OSAA'] = 'ОСАА',
+    ['FS'] = 'ФРИСТЕНДИК',
+    ['DT'] = 'ДТ',
+    ['DUCK'] = 'СИДЕТЬ',
+    ['MD'] = 'МИН ДАМАГ',
+    ['BODY'] = 'БОДИ',
+    ['SAFE'] = 'СЕЙФ',
+    ['Spam'] = 'Спам',
+    ['Fake'] = 'Фейк',
+    ['On land'] = 'При приземлении',
+    ['Offensive'] = 'Оффенсив',
+    ['Force defensive'] = 'Форсить дефенсив',
+    ['Defensive anti-aim'] = 'Дефенсив анти-аим',
+    ['Opposite'] = 'Противоположно',
+    ['State'] = 'Состояние',
+    ['Counter-Terrorist'] = 'Спецназ',
+    ['Override Move-Crouch'] = 'Переопределить движение-присед',
+    ['Yaw direction'] = 'Направление ява',
+    ['General'] = 'Общее',
+    ['Yaw left'] = 'Яв влево',
+    ['Yaw right'] = 'Яв вправо',
+    ['Send to another team'] = 'Отправлять другой команде',
+    ['Revolver R8'] = 'Револьвер R8',
+    ['In Air'] = 'В воздухе',
+    ['No Scope'] = 'Без прицела',
+    ['Peek Assist'] = 'Помощь пика',
+    ['HITCHANCE'] = 'ШАНС',
+    ['HITCHANCE OVR'] = 'ШАНС OVR',
+    ['Moving'] = 'В движении',
+    ['Air'] = 'Воздух',
+    ['Air-Crouch'] = 'Воздух-присед',
+    ['Rifles'] = 'Винтовки',
+    ['Simple'] = 'Простой',
+    ['Alternative'] = 'Альтернатива',
+    ['Legacy animation'] = 'Старая анимация',
+    ['Scope down sight'] = 'Опускать прицел',
+    ['Viewmodel in scope'] = 'Вьюмодель в прицеле',
+    ['Opposite knife hand'] = 'Нож в другой руке',
+    ['Wood stop'] = 'Остановка дерева',
+    ['Wood plank'] = 'Доска',
+    ['Wood strain'] = 'Скрип дерева',
+    ['Hit'] = 'Попадание',
+    ['Main'] = 'Главное',
+    ['Anti-Aim'] = 'Анти-аим',
+    ['Retreat on key release'] = 'Отходить при отпускании клавиши',
+    ['Force low accuracy boost'] = 'Форсить низкий accuracy boost',
+    ['Disable multipoint: feet'] = 'Отключить мультипоинт: ступни',
+    ['Disable multipoint: arms'] = 'Отключить мультипоинт: руки',
+    ['Disable multipoint: legs'] = 'Отключить мультипоинт: ноги',
+    ['Disable hitbox: feet'] = 'Отключить хитбокс: ступни',
+    ['Lower hit chance precision'] = 'Понизить точность hit chance',
+    ['Duck'] = 'Присед',
+    ['Low inaccuracy'] = 'Низкая неточность',
+    ['Cycle (2x)'] = 'Цикл (2x)',
+    ['Near crosshair'] = 'Рядом с прицелом',
+    ['Scoped'] = 'В прицеле',
+    ['Shaded'] = 'С тенью',
+    ['Metallic'] = 'Металлик',
+    ['Bubble'] = 'Пузырь',
+    ['Icon'] = 'Иконка',
+    ['Fullbright'] = 'Fullbright',
+    ['Always slide'] = 'Всегда скользить',
+    ['Disablers'] = 'Отключатели',
+    ['Manual Yaw'] = 'Ручной яв',
+    ['Backward'] = 'Назад',
+    ['Manual arrows'] = 'Ручные стрелки',
+    ['Roll AA'] = 'Roll AA',
+    ['Fluctuate'] = 'Колебание',
+    ['Double tap fake lag limit'] = 'Лимит фейк лага дабл тапа',
+    ['Inaccuracy overlay'] = 'Оверлей неточности',
+    ['Upgrade tablet'] = 'Улучшить планшет',
+    ['Danger Zone items'] = 'Предметы Danger Zone',
+    ['Line of sight'] = 'Линия видимости',
+    ['Hide from OBS'] = 'Скрыть от OBS',
+    ['Lock menu layout'] = 'Закрепить раскладку меню',
+    ['Reset menu layout'] = 'Сбросить раскладку меню',
+    ['Unload'] = 'Выгрузить',
+    ['Z-Hop'] = 'Z-Hop',
+    ['Pre-speed'] = 'Пре-скорость',
+    ['Air duck'] = 'Дак в воздухе',
+    ['Blockbot'] = 'Блокбот',
+    ['Fast walk'] = 'Быстрая ходьба',
+    ['Zeusbot'] = 'Зевсбот',
+    ['Reveal Overwatch players'] = 'Показать игроков Overwatch',
+    ['Auto-accept matchmaking'] = 'Автопринятие матчмейкинга',
+    ['Log weapon purchases'] = 'Лог покупок оружия',
+    ['Log damage dealt'] = 'Лог нанесенного урона',
+    ['Disable sv_pure'] = 'Отключить sv_pure',
+    ['Rebuy fix'] = 'Фикс rebuy',
+    ['Steal player name'] = 'Украсть имя игрока',
+    ['Dump MM wins'] = 'Дамп побед MM',
+}
+
+for english, russian in pairs(third_phrases) do
+    add(english, russian)
+end
+
+local function read_ascii_from_utf16(text, length)
+    length = tonumber(length) or 0
+
+    if text == nil or length <= 0 or length > MAX_TEXT_UNITS then
+        return nil
+    end
+
+    local out = {}
+
+    for i = 0, length - 1 do
+        local c = tonumber(text[i])
+
+        if c == 0 then
+            break
+        end
+
+        if c > 0x7F then
+            return nil
+        end
+
+        if c < 0x20 and c ~= 0x09 and c ~= 0x0A and c ~= 0x0D then
+            return nil
+        end
+
+        out[#out + 1] = string.char(c)
+    end
+
+    if #out == 0 then
+        return nil
+    end
+
+    return table.concat(out)
+end
+
+local ignored_missing = {
+    ['Aesthetic Dev'] = true,
+    ['Cyrillic textboxes'] = true,
+    ['DT adjustments'] = true,
+    ['Esp manipulation'] = true,
+    ['exploit_patches'] = true,
+    ['Gui gradient'] = true,
+    ['Interp grenade warning'] = true,
+    ['Menu anim'] = true,
+    ['Molotov old icon'] = true,
+    ['remove legit'] = true,
+    ['Russian GUI translation'] = true,
+    ['SkyBox'] = true,
+    ['Condition Zero'] = true,
+    ['Global Offensive'] = true,
+    ['Integrale'] = true,
+    ['O.S.I.P.R.'] = true,
+    ['Panthera onca'] = true,
+    ['ZX Spectron'] = true,
+    ['Karambit'] = true,
+    ['Toby'] = true,
+    ['Albert'] = true,
+    ['Yuri'] = true,
+    ['Yanni'] = true,
+    ['Irwin'] = true,
+    ['P2000'] = true,
+    ['M4A4'] = true,
+    ['XM1014'] = true,
+    ['SSG 08'] = true,
+    ['Five-seven / Tec-9 / CZ75'] = true,
+    ['G3SG1 / SCAR-20'] = true,
+    ['R8 Revolver'] = true,
+    ['Desert Eagle'] = true,
+    ['GLOCK-18'] = true,
+    ['Rust'] = true,
+    ['Pacan4ik'] = true,
+    ['main'] = true,
+    ['main_'] = true,
+}
+
+local function cache_generated_translation(key, russian)
+    local translated = generated_translations[key]
+
+    if translated then
+        return translated
+    end
+
+    translated = utf8_to_utf16(russian)
+    generated_translations[key] = translated
+    translations[key] = translated
+    translation_text[key] = russian
+
+    return translated
+end
+
+local function translated_text_for_part(part)
+    local text = translation_text[part]
+
+    if text then
+        return text
+    end
+
+    if part:sub(1, 4) == ' -  ' then
+        local base_text = translation_text[part:sub(5)]
+
+        if base_text then
+            return ' -  ' .. base_text
+        end
+    end
+
+    if part:sub(1, 3) == '-  ' then
+        local base_text = translation_text[part:sub(4)]
+
+        if base_text then
+            return '-  ' .. base_text
+        end
+    end
+
+    return nil
+end
+
+local function lookup_translation(key)
+    local translated = translations[key]
+
+    if translated then
+        return translated
+    end
+
+    if key:sub(1, 4) == ' -  ' then
+        local base = key:sub(5)
+        local base_text = translation_text[base]
+
+        if base_text then
+            return cache_generated_translation(key, ' -  ' .. base_text)
+        end
+    end
+
+    if key:find(', ', 1, true) then
+        local translated_parts = {}
+
+        for part in (key .. ','):gmatch('(.-),') do
+            part = part:gsub('^%s+', ''):gsub('%s+$', '')
+
+            local part_text = translated_text_for_part(part)
+
+            if not part_text then
+                return nil
+            end
+
+            translated_parts[#translated_parts + 1] = part_text
+        end
+
+        return cache_generated_translation(key, table.concat(translated_parts, ', '))
+    end
+
+    return nil
+end
+
+local function should_log_missing(key)
+    if ignored_missing[key] then
+        return false
+    end
+
+    if key:match('^%[[^%]]+%]$') then
+        return false
+    end
+
+    if key:match('^%s*%d+%.?%d*%s*[A-Za-z]*%.?$') then
+        return false
+    end
+
+    if key:match('^Updated %d+ seconds? ago$') then
+        return false
+    end
+
+    if key:match('^Updated %d+ minutes? ago$') then
+        return false
+    end
+
+    if key:match('^fps:%s+%d+%s+var:%s+[%d%.]+ ms%s+ping:%s+%d+ ms%s*loss:%s+%d+%%%s+choke:%s+%d+%%$') then
+        return false
+    end
+
+    if key:match('^fps:') or key:match('^loss:') then
+        return false
+    end
+
+    if key:match('^[%l%d_]+$') then
+        return false
+    end
+
+    return key:find('%a') ~= nil
+end
+
+local ascii_original = bytes({ 0x0F, 0x87, 0x3B, 0xFF, 0xFF, 0xFF })
+local ascii_patch = bytes({ 0x90, 0x90, 0x90, 0x90, 0x90, 0x90 })
+local text_func_expected = bytes({
+    0x55, 0x8B, 0xEC, 0x53, 0x56, 0x8B, 0x75, 0x1C,
+    0x8B, 0xDA, 0x57, 0x8B, 0xF9
+})
+local owns_ascii_patch = false
+
+local function install_cyrillic_input_patch()
+    if bytes_match(ASCII_BOUND_ADDR, ascii_patch, 6) then
+        return
+    end
+
+    if not bytes_match(ASCII_BOUND_ADDR, ascii_original, 6) then
+        return
+    end
+
+    owns_ascii_patch = write_bytes(ASCII_BOUND_ADDR, ascii_patch, 6)
+end
+
+if not bytes_match(TEXT_FUNC_ADDR, text_func_expected, 13) then
+    return
+end
+
+local enabled_ref = ui.new_checkbox('LUA', 'B', 'Native GUI Russian')
+local log_missing_ref = ui.new_checkbox('LUA', 'B', 'Dump untranslated GUI text')
+
+local translation_enabled = true
+local log_missing_enabled = false
+local missing_seen = {}
+local missing_queue = {}
+
+local function update_options()
+    translation_enabled = ui.get(enabled_ref)
+    log_missing_enabled = ui.get(log_missing_ref)
+    ui.set_visible(log_missing_ref, translation_enabled)
+end
+
+ui.set(enabled_ref, true)
+ui.set(log_missing_ref, false)
+ui.set_callback(enabled_ref, update_options)
+ui.set_callback(log_missing_ref, update_options)
+update_options()
+
+local original_text_addr = read_u32(TEXT_VFUNC_ENTRY)
+
+if original_text_addr == 0 then
+    return
+end
+
+local translate_callback
+
+translate_callback = cast(translate_text_t, function(text, length, out_length)
+    if translation_enabled then
+        local key = read_ascii_from_utf16(text, length)
+
+        if key then
+            local translated = lookup_translation(key)
+
+            if translated then
+                out_length[0] = translated.length
+                return translated.pointer
+            end
+
+            if log_missing_enabled and not missing_seen[key] and should_log_missing(key) then
+                missing_seen[key] = true
+                missing_queue[#missing_queue + 1] = key
+            end
+        end
+    end
+
+    return text
+end)
+
+local function make_text_wrapper(original_func, helper_func)
+    local code = bytes({
+        0x60,
+        0x8B, 0x44, 0x24, 0x34,
+        0x8B, 0x5C, 0x24, 0x38,
+        0x8D, 0x7C, 0x24, 0x38,
+        0x57,
+        0x53,
+        0x50,
+        0xB8, 0x11, 0x11, 0x11, 0x11,
+        0xFF, 0xD0,
+        0x83, 0xC4, 0x0C,
+        0x85, 0xC0,
+        0x74, 0x04,
+        0x89, 0x44, 0x24, 0x34,
+        0x61,
+        0x68, 0x22, 0x22, 0x22, 0x22,
+        0xC3
+    })
+
+    put_u32(code, 17, helper_func)
+    put_u32(code, 36, original_func)
+
+    return code
+end
+
+local helper_addr = tonumber(cast('uintptr_t', translate_callback)) or 0
+local cave_ptr = helper_addr ~= 0 and winapi.alloc(CAVE_SIZE) or nil
+local wrapper_addr = cave_ptr ~= nil and tonumber(cast('uintptr_t', cave_ptr)) or 0
+local text_hook_installed = false
+
+if wrapper_addr ~= 0 then
+    local wrapper_code = make_text_wrapper(original_text_addr, helper_addr)
+
+    ffi.copy(cave_ptr, wrapper_code, ffi.sizeof(wrapper_code))
+    text_hook_installed = write_u32(TEXT_VFUNC_ENTRY, wrapper_addr)
+end
+
+install_cyrillic_input_patch()
+
+local function flush_missing()
+    for i = 1, #missing_queue do
+        client.log('[ru gui missing] ' .. missing_queue[i])
+        missing_queue[i] = nil
+    end
+end
+
+client.set_event_callback('paint_ui', flush_missing)
+
+client.set_event_callback('shutdown', function()
+    pcall(function()
+        -- CRASH FIX: the text trampoline calls our ffi callback, which luajit
+        -- frees when the lua state tears down on unload. If the game calls the
+        -- hook after that (e.g. the frame the menu closes on), it jumps into the
+        -- freed callback -> crash. So first turn the trampoline itself into a
+        -- plain passthrough (`push original_text; ret`) in our own persistent RWX
+        -- cave. That way any call arriving after teardown goes straight to the
+        -- original text function instead of the dead callback, regardless of
+        -- whether the vtable restore below lands in time.
+        if wrapper_addr ~= 0 then
+            local passthrough = bytes({ 0x68, 0x00, 0x00, 0x00, 0x00, 0xC3 })
+            put_u32(passthrough, 1, original_text_addr)
+            write_bytes(wrapper_addr, passthrough, 6)
+        end
+
+        if text_hook_installed and read_u32(TEXT_VFUNC_ENTRY) == wrapper_addr then
+            write_u32(TEXT_VFUNC_ENTRY, original_text_addr)
+        end
+
+        if owns_ascii_patch and bytes_match(ASCII_BOUND_ADDR, ascii_patch, 6) then
+            write_bytes(ASCII_BOUND_ADDR, ascii_original, 6)
+        end
+    end)
+end)
+end
+pcall(necro_module_gui_russian)
+end
+
 local cvars = {
     mat_ambient_light_r = cvar.mat_ambient_light_r,
     mat_ambient_light_g = cvar.mat_ambient_light_g,
