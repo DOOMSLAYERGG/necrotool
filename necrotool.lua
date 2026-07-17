@@ -527,13 +527,12 @@ local patch_sites = {
         patch = make_jmp(ADDRESS.select_patch, region.select, buffer_size(original.select)),
         owns = false
     },
-    {
-        name = 'draw',
-        address = ADDRESS.draw_patch,
-        original = original.draw,
-        patch = make_jmp(ADDRESS.draw_patch, region.draw, buffer_size(original.draw)),
-        owns = false
-    },
+    -- NOTE: the 'draw' patch (tab-icon hover-glow animation) is intentionally
+    -- NOT installed. It hooks the menu's hover / hit-testing path and shifts the
+    -- region that captures mouse input, which broke scrolling (the wheel only
+    -- worked on one side of the menu). Dropping it restores native scroll/hover
+    -- while keeping the tab-switch ('select') and content-fade ('content')
+    -- animations. Only the tab-icon hover glow is lost.
     {
         name = 'content',
         address = ADDRESS.content_patch,
