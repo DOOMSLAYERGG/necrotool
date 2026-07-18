@@ -1,67 +1,84 @@
 -- ============================================================================
 -- Best per-weapon auto stop  (standalone gamesense lua)
 -- ----------------------------------------------------------------------------
--- Stops your movement the moment you are about to shoot, tuned per weapon:
--- snipers / deagle demand a near-full stop, spray weapons are allowed to keep a
--- bit of speed (their moving accuracy is fine). Uses a real counter-strafe so
--- you go accurate within a tick or two instead of coasting on friction.
+-- Stops your movement when you are about to shoot, tuned per weapon: snipers and
+-- the deagle demand a near-full stop, spray weapons keep some speed. Uses a real
+-- counter-strafe so you go accurate within a tick.
 --
--- Load it as its OWN script alongside necrotool. Its UI lives under LUA > B.
+--  * Anticipation: engages BEFORE the enemy becomes a live threat - as soon as
+--    any enemy is within "Pre-stop range" of you, so you are already stopped by
+--    the time you clear the corner / peek.
+--  * Stop speed (units): the base speed you are allowed to keep before the stop
+--    kicks in, in real units/s. Per-weapon factors scale it (snipers stop far
+--    harder than shotguns).
+--
+-- Load as its OWN script alongside necrotool. UI lives under LUA > B.
 -- ============================================================================
 
-local enabled       = ui.new_checkbox("LUA", "B", "Per-weapon auto stop")
-local mode          = ui.new_combobox("LUA", "B", "\aC8C8C8C8Stop mode", { "Counter-strafe", "Instant" })
-local require_threat= ui.new_checkbox("LUA", "B", "\aC8C8C8C8Only with a target")
-local tighten       = ui.new_slider("LUA", "B", "\aC8C8C8C8Tightness", 50, 150, 100, true, "%")
+local enabled    = ui.new_checkbox("LUA", "B", "Per-weapon auto stop")
+local mode       = ui.new_combobox("LUA", "B", "\aC8C8C8C8Stop mode", { "Counter-strafe", "Instant" })
+local stop_speed = ui.new_slider("LUA", "B", "\aC8C8C8C8Stop speed", 1, 150, 40, true, "u")
+local pre_range  = ui.new_slider("LUA", "B", "\aC8C8C8C8Pre-stop range", 0, 2500, 650, true, "u", 1, { [0] = "Target only" })
 
 ui.set(enabled, false)
-ui.set(require_threat, true)
 
 local function refresh()
     local on = ui.get(enabled)
     ui.set_visible(mode, on)
-    ui.set_visible(require_threat, on)
-    ui.set_visible(tighten, on)
+    ui.set_visible(stop_speed, on)
+    ui.set_visible(pre_range, on)
 end
 ui.set_callback(enabled, refresh)
 refresh()
 
--- Speed (units/s) at or below which this weapon class is "accurate enough", so
--- there is no point killing your movement. Above it, we counter-strafe to a
--- stop. The Tightness slider scales these (lower % = stop sooner / harder).
-local WEAPON_STOP_SPEED = {
-    -- snipers: must be dead stopped
-    CWeaponSSG08 = 5,  CWeaponAWP = 5,
-    -- auto snipers
-    CWeaponG3SG1 = 45, CWeaponSCAR20 = 45,
-    -- heavy pistols
-    CDEagle = 34, CWeaponRevolver = 34,
-}
+-- per-weapon multiplier applied to the Stop-speed slider. Lower = stops harder.
+local function weapon_factor(cn)
+    if not cn then return 1.0 end
+    if cn == "CWeaponSSG08" or cn == "CWeaponAWP" then return 0.12 end               -- snipers
+    if cn == "CWeaponG3SG1" or cn == "CWeaponSCAR20" then return 0.6 end             -- auto snipers
+    if cn == "CDEagle" or cn == "CWeaponRevolver" then return 0.6 end                -- heavy pistols
+    if cn:find("Nova") or cn:find("XM1014") or cn:find("Mag7") or cn:find("Sawedoff") then
+        return 3.0                                                                   -- shotguns
+    end
+    if cn:find("Glock") or cn:find("P2000") or cn:find("Usp") or cn:find("P250")
+        or cn:find("FiveSeven") or cn:find("Tec9") or cn:find("CZ75") or cn:find("Elite") then
+        return 0.9                                                                   -- pistols
+    end
+    if cn:find("Mp9") or cn:find("Mac10") or cn:find("Mp7") or cn:find("Ump45")
+        or cn:find("P90") or cn:find("Bizon") or cn:find("Mp5") then
+        return 1.3                                                                   -- smgs
+    end
+    if cn:find("M249") or cn:find("Negev") then return 1.0 end                       -- lmgs
+    return 1.0                                                                       -- rifles / default
+end
 
-local function stop_speed_for(classname)
-    if not classname then return 90 end
-    local direct = WEAPON_STOP_SPEED[classname]
-    if direct then return direct end
+-- engage as soon as a live threat exists OR (anticipation) an enemy is within the
+-- pre-stop range, so we brake before actually peeking out onto them
+local function should_engage(me)
+    if client.current_threat() then return true end
 
-    -- category matches by substring for everything else
-    if classname:find("Nova") or classname:find("XM1014")
-        or classname:find("Mag7") or classname:find("Sawedoff") then
-        return 170                         -- shotguns: accurate on the move
+    local range = ui.get(pre_range)
+    if range <= 0 then return false end
+
+    local mx, my, mz = entity.get_origin(me)
+    if not mx then return false end
+
+    local ok, players = pcall(entity.get_players, true)   -- enemies only
+    if not ok or not players then return false end
+
+    local r2 = range * range
+    for _, p in ipairs(players) do
+        if entity.is_alive(p) then
+            local ex, ey, ez = entity.get_origin(p)
+            if ex then
+                local dx, dy, dz = mx - ex, my - ey, mz - ez
+                if (dx * dx + dy * dy + dz * dz) <= r2 then
+                    return true
+                end
+            end
+        end
     end
-    if classname:find("Glock") or classname:find("P2000") or classname:find("Usp")
-        or classname:find("P250") or classname:find("FiveSeven") or classname:find("Tec9")
-        or classname:find("CZ75") or classname:find("Elite") then
-        return 70                          -- pistols
-    end
-    if classname:find("Mp9") or classname:find("Mac10") or classname:find("Mp7")
-        or classname:find("Ump45") or classname:find("P90") or classname:find("Bizon")
-        or classname:find("Mp5") then
-        return 110                         -- smgs
-    end
-    if classname:find("M249") or classname:find("Negev") then
-        return 90                          -- lmgs
-    end
-    return 90                              -- rifles / default
+    return false
 end
 
 local function on_setup_command(cmd)
@@ -74,8 +91,7 @@ local function on_setup_command(cmd)
     local flags = entity.get_prop(me, "m_fFlags") or 0
     if bit.band(flags, 1) == 0 then return end
 
-    -- only bother when we are actually about to engage
-    if ui.get(require_threat) and not client.current_threat() then return end
+    if not should_engage(me) then return end
 
     local weapon = entity.get_player_weapon(me)
     if not weapon then return end
@@ -84,9 +100,9 @@ local function on_setup_command(cmd)
     if not vx then return end
     local speed = math.sqrt(vx * vx + vy * vy)
 
-    -- per-weapon threshold, scaled by the Tightness slider (100% = as listed)
-    local threshold = stop_speed_for(entity.get_classname(weapon)) * (ui.get(tighten) / 100)
-    if speed <= threshold then return end   -- already accurate enough
+    -- threshold in real units/s: slider value scaled per weapon
+    local threshold = ui.get(stop_speed) * weapon_factor(entity.get_classname(weapon))
+    if speed <= threshold then return end   -- already slow enough
 
     if ui.get(mode) == "Instant" then
         cmd.forwardmove = 0
@@ -94,7 +110,7 @@ local function on_setup_command(cmd)
         return
     end
 
-    -- counter-strafe: push exactly opposite to the current velocity, in the
+    -- counter-strafe: push exactly opposite the current velocity, in the
     -- command's local (view-relative) frame, at full move speed
     local yaw  = math.rad(cmd.yaw)
     local cos, sin = math.cos(yaw), math.sin(yaw)
