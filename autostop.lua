@@ -168,6 +168,42 @@ local function shot_available(me)
     return false
 end
 
+-- Through-wall anticipation: if an enemy is CLOSE and we are moving toward them,
+-- start braking even without line of sight - you are about to swing/peek out onto
+-- them. The short range + "moving toward" gate keep this from firing all the time
+-- (holding, standing or moving away never triggers it).
+local CLOSE_PEEK_RANGE = 420   -- units
+local MIN_PEEK_SPEED    = 30    -- must actually be moving
+
+local function about_to_peek(me)
+    local vx, vy = entity.get_prop(me, "m_vecVelocity")
+    if not vx then return false end
+    local speed = math.sqrt(vx * vx + vy * vy)
+    if speed < MIN_PEEK_SPEED then return false end
+    local vdx, vdy = vx / speed, vy / speed
+
+    local mx, my = entity.get_origin(me)
+    if not mx then return false end
+    local ok, players = pcall(entity.get_players, true)   -- enemies only
+    if not ok or not players then return false end
+
+    local r2 = CLOSE_PEEK_RANGE * CLOSE_PEEK_RANGE
+    for _, p in ipairs(players) do
+        if entity.is_alive(p) and not entity.is_dormant(p) then
+            local px, py = entity.get_origin(p)
+            if px then
+                local dx, dy = px - mx, py - my
+                local d2 = dx * dx + dy * dy
+                if d2 > 0 and d2 <= r2 then
+                    local d = math.sqrt(d2)
+                    if (dx / d) * vdx + (dy / d) * vdy > 0.4 then return true end
+                end
+            end
+        end
+    end
+    return false
+end
+
 local function robust_yaw(cmd)
     local y = cmd.yaw
     if type(y) == "number" then return y end
@@ -204,14 +240,14 @@ local function on_setup_command(cmd)
     hud.speed = speed
     hud.threshold = cfg.speed
 
-    -- Stop for the shot: brake the instant a shot is actually available (an
-    -- enemy is visible / the ragebot's target has line of sight), and hold it for
-    -- 1s after. Behind cover nothing is visible, so you move completely freely.
-    local can_shoot = shot_available(me)
-    if can_shoot then
+    -- Brake when a shot is available (enemy visible now or at our predicted
+    -- position) OR we are about to peek a close enemy through a wall. Hold 1s
+    -- after. Behind cover, far, or not moving toward anyone -> move freely.
+    local engage = shot_available(me) or about_to_peek(me)
+    if engage then
         hold_until = globals.curtime() + HOLD_SECONDS
     end
-    local stopping = can_shoot or globals.curtime() < hold_until
+    local stopping = engage or globals.curtime() < hold_until
     hud.engaged = stopping
     if not stopping then return end
     if speed <= cfg.speed then return end   -- already slow enough
