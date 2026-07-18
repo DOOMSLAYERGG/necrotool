@@ -1,63 +1,43 @@
 -- ============================================================================
 -- godly.yaw  -  anti-aim builder (standalone gamesense lua)
 -- ----------------------------------------------------------------------------
--- A per-state anti-aim builder. Pick a state in the "State" combobox and set its
--- own pitch / yaw base / yaw / style / jitter / desync (body yaw) / freestanding.
--- Each command the active state is detected (Stand / Move / Slow walk / Air /
--- Crouch) and its config is pushed into gamesense's own anti-aim engine, so the
--- result is a real, hard-to-hit AA (jitter + desync + fake pitch + freestanding).
+-- Per-state anti-aim builder with a necrotool-style navigation menu: a master
+-- toggle, a list of states you click into, and each state's own settings with a
+-- Back button. Each command the active state is detected (Stand / Move / Slow
+-- walk / Air / Crouch) and its config is pushed into gamesense's own anti-aim
+-- engine (pitch, yaw base, yaw, jitter, body yaw, freestanding) for a real
+-- jitter + desync + fake-pitch + freestanding AA.
 --
--- This does NOT reimplement the cheat's math - it drives the built-in AA
--- references, which is the reliable way to build anti-aims from lua. Every
--- reference is pcall'd so a missing one on a given build just disables that
--- knob instead of breaking the script.
---
--- Load as its OWN script. UI lives under LUA > B. Per-state config persists to
--- the gamesense database.
+-- Every reference is pcall-guarded; per-state config persists to the database.
+-- Load as its OWN script. UI lives under LUA > B.
 -- ============================================================================
 
 local DB_KEY = "godly_yaw_cfg"
 
-local STATES = { "Global", "Standing", "Moving", "Slow walk", "Air", "Crouch" }
-
--- option lists (mapped to gamesense's own AA combobox values via pcall(ui.set))
+local STATES     = { "Standing", "Moving", "Slow walk", "Air", "Crouch" }
 local PITCH_OPTS = { "Off", "Down", "Up", "Default" }
 local BASE_OPTS  = { "Local view", "At targets", "Away from targets" }
 local STYLE_OPTS = { "Static", "Jitter", "Spin", "Random" }
 local BODY_OPTS  = { "Off", "Static", "Opposite", "Jitter" }
 
--- default per-state config
-local function default_cfg(state)
+local function default_cfg()
     return {
-        enabled = state ~= "Global",
-        pitch   = "Down",
-        base    = "At targets",
-        yaw_add = (state == "Air" and 0) or 0,
-        style   = (state == "Standing" and "Jitter") or "Jitter",
-        range   = 45,
-        body    = "Jitter",
-        body_amt = 60,
-        freestand = true,
+        enabled = true, pitch = "Down", base = "At targets", yaw_add = 0,
+        style = "Jitter", range = 45, body = "Jitter", body_amt = 60, freestand = true,
     }
 end
 
 local config = {}
-for _, s in ipairs(STATES) do config[s] = default_cfg(s) end
+for _, s in ipairs(STATES) do config[s] = default_cfg() end
 
--- ---- persistence (flat keys; nested tables can be dropped by the db) ----
+-- ---- persistence (flat keys) ----
 local function persist()
     local flat = {}
     for _, s in ipairs(STATES) do
         local c = config[s]
-        flat[s.."|en"]   = c.enabled
-        flat[s.."|pi"]   = c.pitch
-        flat[s.."|ba"]   = c.base
-        flat[s.."|ya"]   = c.yaw_add
-        flat[s.."|st"]   = c.style
-        flat[s.."|rg"]   = c.range
-        flat[s.."|bo"]   = c.body
-        flat[s.."|ba2"]  = c.body_amt
-        flat[s.."|fs"]   = c.freestand
+        flat[s.."|en"], flat[s.."|pi"], flat[s.."|ba"] = c.enabled, c.pitch, c.base
+        flat[s.."|ya"], flat[s.."|st"], flat[s.."|rg"] = c.yaw_add, c.style, c.range
+        flat[s.."|bo"], flat[s.."|b2"], flat[s.."|fs"]  = c.body, c.body_amt, c.freestand
     end
     pcall(database.write, DB_KEY, flat)
 end
@@ -67,38 +47,58 @@ local function restore()
     for _, s in ipairs(STATES) do
         local c = config[s]
         if f[s.."|en"] ~= nil then c.enabled = f[s.."|en"] end
-        if f[s.."|pi"]  then c.pitch    = f[s.."|pi"] end
-        if f[s.."|ba"]  then c.base     = f[s.."|ba"] end
-        if f[s.."|ya"]  then c.yaw_add  = tonumber(f[s.."|ya"]) or c.yaw_add end
-        if f[s.."|st"]  then c.style    = f[s.."|st"] end
-        if f[s.."|rg"]  then c.range    = tonumber(f[s.."|rg"]) or c.range end
-        if f[s.."|bo"]  then c.body     = f[s.."|bo"] end
-        if f[s.."|ba2"] then c.body_amt = tonumber(f[s.."|ba2"]) or c.body_amt end
+        if f[s.."|pi"] then c.pitch = f[s.."|pi"] end
+        if f[s.."|ba"] then c.base = f[s.."|ba"] end
+        if f[s.."|ya"] then c.yaw_add = tonumber(f[s.."|ya"]) or c.yaw_add end
+        if f[s.."|st"] then c.style = f[s.."|st"] end
+        if f[s.."|rg"] then c.range = tonumber(f[s.."|rg"]) or c.range end
+        if f[s.."|bo"] then c.body = f[s.."|bo"] end
+        if f[s.."|b2"] then c.body_amt = tonumber(f[s.."|b2"]) or c.body_amt end
         if f[s.."|fs"] ~= nil then c.freestand = f[s.."|fs"] end
     end
 end
 restore()
 
--- ---- UI ----
-local master     = ui.new_checkbox("LUA", "B", "godly.yaw")
-local state_sel  = ui.new_combobox("LUA", "B", "\aC8C8C8C8State", STATES)
-local w_enabled  = ui.new_checkbox("LUA", "B", "\aC8C8C8C8  Enabled (this state)")
-local w_pitch    = ui.new_combobox("LUA", "B", "\aC8C8C8C8  Pitch", PITCH_OPTS)
-local w_base     = ui.new_combobox("LUA", "B", "\aC8C8C8C8  Yaw base", BASE_OPTS)
-local w_yaw      = ui.new_slider("LUA", "B", "\aC8C8C8C8  Yaw add", -180, 180, 0, true, "\176")
-local w_style    = ui.new_combobox("LUA", "B", "\aC8C8C8C8  Style", STYLE_OPTS)
-local w_range    = ui.new_slider("LUA", "B", "\aC8C8C8C8  Jitter / spin", 0, 180, 45, true, "\176")
-local w_body     = ui.new_combobox("LUA", "B", "\aC8C8C8C8  Desync (body yaw)", BODY_OPTS)
-local w_body_amt = ui.new_slider("LUA", "B", "\aC8C8C8C8  Desync amount", 0, 60, 60, true, "\176")
-local w_free     = ui.new_checkbox("LUA", "B", "\aC8C8C8C8  Freestanding")
-local w_debug    = ui.new_checkbox("LUA", "B", "\aC8C8C8C8Indicator")
-
-ui.set(master, false)
-
+-- ---- menu state ----
+local focused = nil            -- which state we are editing (nil = state list)
 local loading = false
-local function load_state()
+
+-- ---- UI (necrotool-style nav) ----
+local master   = ui.new_checkbox("LUA", "B", "godly.yaw")
+local nav_open = ui.new_checkbox("LUA", "B", "nav open")
+ui.set_visible(nav_open, false)
+local nav_label = ui.new_label("LUA", "B", "\aB9BEFFFF- \aFFFFFFFFstates \aB9BEFFFF-")
+
+local nav = {}
+for _, name in ipairs(STATES) do
+    nav[name] = ui.new_button("LUA", "B", "\aB9BEFFFF > \aFFFFFFFF" .. name, function()
+        focused = name
+        ui.set(nav_open, true)
+    end)
+end
+local nav_back = ui.new_button("LUA", "B", "\aB9BEFFFF < \aFFFFFFFFBack", function()
+    focused = nil
+    ui.set(nav_open, false)
+end)
+
+local w_enabled  = ui.new_checkbox("LUA", "B", "\aFFFFFFFF  Enabled (this state)")
+local w_pitch    = ui.new_combobox("LUA", "B", "\aFFFFFFFF  Pitch", PITCH_OPTS)
+local w_base     = ui.new_combobox("LUA", "B", "\aFFFFFFFF  Yaw base", BASE_OPTS)
+local w_yaw      = ui.new_slider("LUA", "B", "\aFFFFFFFF  Yaw add", -180, 180, 0)
+local w_style    = ui.new_combobox("LUA", "B", "\aFFFFFFFF  Style", STYLE_OPTS)
+local w_range    = ui.new_slider("LUA", "B", "\aFFFFFFFF  Jitter / spin", 0, 180, 45)
+local w_body     = ui.new_combobox("LUA", "B", "\aFFFFFFFF  Desync (body yaw)", BODY_OPTS)
+local w_body_amt = ui.new_slider("LUA", "B", "\aFFFFFFFF  Desync amount", 0, 60, 60)
+local w_free     = ui.new_checkbox("LUA", "B", "\aFFFFFFFF  Freestanding")
+local w_debug    = ui.new_checkbox("LUA", "B", "\aFFFFFFFF  Indicator")
+
+local settings_elems = { w_enabled, w_pitch, w_base, w_yaw, w_style, w_range, w_body, w_body_amt, w_free }
+
+-- push a state's stored config into the shared setting elements
+local function load_focused()
+    if not focused then return end
     loading = true
-    local c = config[ui.get(state_sel)]
+    local c = config[focused]
     ui.set(w_enabled, c.enabled)
     ui.set(w_pitch, c.pitch)
     ui.set(w_base, c.base)
@@ -110,9 +110,11 @@ local function load_state()
     ui.set(w_free, c.freestand)
     loading = false
 end
-local function save_state()
-    if loading then return end
-    local c = config[ui.get(state_sel)]
+
+-- store the shared setting elements back into the focused state's config
+local function save_focused()
+    if loading or not focused then return end
+    local c = config[focused]
     c.enabled  = ui.get(w_enabled)
     c.pitch    = ui.get(w_pitch)
     c.base     = ui.get(w_base)
@@ -125,20 +127,24 @@ local function save_state()
     persist()
 end
 
-local function refresh()
+local function update_vis()
     local on = ui.get(master)
-    for _, e in ipairs({ state_sel, w_enabled, w_pitch, w_base, w_yaw, w_style, w_range, w_body, w_body_amt, w_free, w_debug }) do
-        ui.set_visible(e, on)
-    end
+    local open = ui.get(nav_open)
+
+    ui.set_visible(nav_label, on and not open)
+    for _, btn in pairs(nav) do ui.set_visible(btn, on and not open) end
+    ui.set_visible(nav_back, on and open)
+
+    local show_settings = on and open and focused ~= nil
+    if show_settings then load_focused() end
+    for _, e in ipairs(settings_elems) do ui.set_visible(e, show_settings) end
+    ui.set_visible(w_debug, on and not open)
 end
 
-ui.set_callback(master, refresh)
-ui.set_callback(state_sel, load_state)
-for _, e in ipairs({ w_enabled, w_pitch, w_base, w_yaw, w_style, w_range, w_body, w_body_amt, w_free }) do
-    ui.set_callback(e, save_state)
-end
-load_state()
-refresh()
+ui.set_callback(master, update_vis)
+ui.set_callback(nav_open, update_vis)
+for _, e in ipairs(settings_elems) do ui.set_callback(e, save_focused) end
+update_vis()
 
 -- ---- built-in AA references (all guarded) ----
 local function ref2(cat, sub, name)
@@ -147,25 +153,22 @@ local function ref2(cat, sub, name)
     return nil
 end
 
-local aa_enabled            = ref2("AA", "Anti-aimbot angles", "Enabled")
-local r_pitch               = ref2("AA", "Anti-aimbot angles", "Pitch")
-local r_yaw_base            = ref2("AA", "Anti-aimbot angles", "Yaw base")
-local r_yaw_mode, r_yaw_val = ref2("AA", "Anti-aimbot angles", "Yaw")
-local r_jit_mode, r_jit_val = ref2("AA", "Anti-aimbot angles", "Yaw jitter")
+local aa_enabled              = ref2("AA", "Anti-aimbot angles", "Enabled")
+local r_pitch                 = ref2("AA", "Anti-aimbot angles", "Pitch")
+local r_yaw_base              = ref2("AA", "Anti-aimbot angles", "Yaw base")
+local r_yaw_mode, r_yaw_val   = ref2("AA", "Anti-aimbot angles", "Yaw")
+local r_jit_mode, r_jit_val   = ref2("AA", "Anti-aimbot angles", "Yaw jitter")
 local r_body_mode, r_body_val = ref2("AA", "Anti-aimbot angles", "Body yaw")
-local r_free                = ref2("AA", "Anti-aimbot angles", "Freestanding")
+local r_free                  = ref2("AA", "Anti-aimbot angles", "Freestanding")
 
-local function s(ref, ...)
+local function setref(ref, ...)
     if ref then pcall(ui.set, ref, ...) end
 end
 
--- ---- state detection ----
 local function current_state(me)
     local flags = entity.get_prop(me, "m_fFlags") or 0
-    local on_ground = bit.band(flags, 1) == 1
-    if not on_ground then return "Air" end
-    if bit.band(flags, 2) ~= 0 then return "Crouch" end   -- FL_DUCKING
-
+    if bit.band(flags, 1) == 0 then return "Air" end
+    if bit.band(flags, 2) ~= 0 then return "Crouch" end
     local vx, vy = entity.get_prop(me, "m_vecVelocity")
     local speed = vx and math.sqrt(vx * vx + vy * vy) or 0
     if speed <= 5 then return "Standing" end
@@ -176,64 +179,40 @@ end
 local hud = { state = "", style = "" }
 
 local function apply(cfg)
-    s(aa_enabled, true)
+    setref(aa_enabled, true)
+    if cfg.pitch ~= "Off" then setref(r_pitch, cfg.pitch) end
+    setref(r_yaw_base, cfg.base)
 
-    -- pitch
-    if cfg.pitch ~= "Off" then s(r_pitch, cfg.pitch) end
-
-    -- yaw base + add
-    s(r_yaw_base, cfg.base)
-
-    -- style -> gamesense yaw / jitter modes
     if cfg.style == "Spin" then
-        s(r_yaw_mode, "Spin")
-        s(r_yaw_val, cfg.range)
-        s(r_jit_mode, "Off")
+        setref(r_yaw_mode, "Spin"); setref(r_yaw_val, cfg.range); setref(r_jit_mode, "Off")
     elseif cfg.style == "Jitter" then
-        s(r_yaw_mode, "Static")
-        s(r_yaw_val, cfg.yaw_add)
-        s(r_jit_mode, "Center")
-        s(r_jit_val, cfg.range)
+        setref(r_yaw_mode, "Static"); setref(r_yaw_val, cfg.yaw_add)
+        setref(r_jit_mode, "Center"); setref(r_jit_val, cfg.range)
     elseif cfg.style == "Random" then
-        s(r_yaw_mode, "Static")
-        s(r_yaw_val, cfg.yaw_add)
-        s(r_jit_mode, "Random")
-        s(r_jit_val, cfg.range)
-    else -- Static
-        s(r_yaw_mode, "Static")
-        s(r_yaw_val, cfg.yaw_add)
-        s(r_jit_mode, "Off")
-    end
-
-    -- desync / body yaw
-    if cfg.body == "Off" then
-        s(r_body_mode, "Off")
+        setref(r_yaw_mode, "Static"); setref(r_yaw_val, cfg.yaw_add)
+        setref(r_jit_mode, "Random"); setref(r_jit_val, cfg.range)
     else
-        s(r_body_mode, cfg.body)
-        s(r_body_val, cfg.body_amt)
+        setref(r_yaw_mode, "Static"); setref(r_yaw_val, cfg.yaw_add); setref(r_jit_mode, "Off")
     end
 
-    -- freestanding (r_free may be checkbox[+hotkey]; setting the first works)
-    s(r_free, cfg.freestand)
+    if cfg.body == "Off" then
+        setref(r_body_mode, "Off")
+    else
+        setref(r_body_mode, cfg.body); setref(r_body_val, cfg.body_amt)
+    end
 
+    setref(r_free, cfg.freestand)
     hud.style = cfg.style
 end
 
 local function on_setup_command()
     if not ui.get(master) then return end
-
     local me = entity.get_local_player()
     if not me or not entity.is_alive(me) then return end
-
     local state = current_state(me)
     hud.state = state
-
-    -- the state's own config, else fall back to Global
     local cfg = config[state]
-    if not cfg.enabled then cfg = config["Global"] end
-    if not cfg.enabled then return end
-
-    apply(cfg)
+    if cfg and cfg.enabled then apply(cfg) end
 end
 
 local function on_paint_ui()
