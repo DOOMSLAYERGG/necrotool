@@ -113,18 +113,33 @@ local function weapon_category(cn)
     return "Rifles"
 end
 
-local function enemy_in_range(me, range)
-    local mx, my, mz = entity.get_origin(me)
+-- Anticipation: only "peeking" onto an enemy counts, i.e. we are actually MOVING
+-- toward a nearby enemy. This is what stops the constant braking - just standing
+-- or holding near an enemy (or moving away) no longer triggers the auto stop.
+local MIN_PEEK_SPEED = 40   -- below this we are not really peeking
+
+local function peeking_enemy(me, range)
+    local vx, vy = entity.get_prop(me, "m_vecVelocity")
+    if not vx then return false end
+    local speed = math.sqrt(vx * vx + vy * vy)
+    if speed < MIN_PEEK_SPEED then return false end
+    local vdx, vdy = vx / speed, vy / speed              -- velocity direction
+
+    local mx, my = entity.get_origin(me)
     if not mx then return false end
-    local ok, players = pcall(entity.get_players, true)   -- enemies only
+    local ok, players = pcall(entity.get_players, true)  -- enemies only
     if not ok or not players then return false end
-    local r2 = range * range
+
     for _, p in ipairs(players) do
         if entity.is_alive(p) then
-            local ex, ey, ez = entity.get_origin(p)
+            local ex, ey = entity.get_origin(p)
             if ex then
-                local dx, dy, dz = mx - ex, my - ey, mz - ez
-                if (dx * dx + dy * dy + dz * dz) <= r2 then return true end
+                local dx, dy = ex - mx, ey - my
+                local d = math.sqrt(dx * dx + dy * dy)
+                if d > 0 and d <= range then
+                    -- moving toward this enemy (within ~60 degrees of velocity)
+                    if (dx / d) * vdx + (dy / d) * vdy > 0.5 then return true end
+                end
             end
         end
     end
@@ -167,12 +182,18 @@ local function on_setup_command(cmd)
     hud.speed = speed
     hud.threshold = cfg.speed
 
-    -- engage before peeking: a live threat, or an enemy within the look-ahead
-    local engage = client.current_threat() ~= nil or enemy_in_range(me, ANTICIPATE_UNITS)
-    if engage then
-        hold_until = globals.curtime() + HOLD_SECONDS   -- keep braking 1s after
+    -- Engage in exactly three situations:
+    --   * a live threat  -> stop us so the shot can be taken
+    --   * peeking onto an enemy (moving toward one in range) -> stop before we
+    --     clear the corner
+    --   * the 1s hold after either of the above -> stay accurate right after
+    -- Standing / holding / moving away no longer brakes (fixes constant stop).
+    local threat  = client.current_threat() ~= nil
+    local peeking = peeking_enemy(me, ANTICIPATE_UNITS)
+    if threat or peeking then
+        hold_until = globals.curtime() + HOLD_SECONDS
     end
-    local stopping = engage or globals.curtime() < hold_until
+    local stopping = threat or peeking or globals.curtime() < hold_until
     hud.engaged = stopping
     if not stopping then return end
     if speed <= cfg.speed then return end   -- already slow enough
