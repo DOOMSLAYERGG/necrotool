@@ -113,32 +113,27 @@ local function weapon_category(cn)
     return "Rifles"
 end
 
--- Anticipation: only "peeking" onto an enemy counts, i.e. we are actually MOVING
--- toward a nearby enemy. This is what stops the constant braking - just standing
--- or holding near an enemy (or moving away) no longer triggers the auto stop.
-local MIN_PEEK_SPEED = 40   -- below this we are not really peeking
-
-local function peeking_enemy(me, range)
-    local vx, vy = entity.get_prop(me, "m_vecVelocity")
-    if not vx then return false end
-    local speed = math.sqrt(vx * vx + vy * vy)
-    if speed < MIN_PEEK_SPEED then return false end
-    local vdx, vdy = vx / speed, vy / speed              -- velocity direction
-
-    local mx, my = entity.get_origin(me)
+-- We only brake when an enemy is actually VISIBLE (a clear line from our eyes to
+-- them), i.e. we have peeked out and can take the shot. Behind cover there is no
+-- line of sight, so we move completely freely - this is what stops the constant
+-- braking. The counter-strafe halts us within a couple of ticks, so we are
+-- effectively stopped the instant we clear the corner.
+local function can_see_enemy(me)
+    local mx, my, mz = entity.get_origin(me)
     if not mx then return false end
+    local eye_z = mz + (entity.get_prop(me, "m_vecViewOffset[2]") or 64)
+
     local ok, players = pcall(entity.get_players, true)  -- enemies only
     if not ok or not players then return false end
 
     for _, p in ipairs(players) do
-        if entity.is_alive(p) then
-            local ex, ey = entity.get_origin(p)
-            if ex then
-                local dx, dy = ex - mx, ey - my
-                local d = math.sqrt(dx * dx + dy * dy)
-                if d > 0 and d <= range then
-                    -- moving toward this enemy (within ~60 degrees of velocity)
-                    if (dx / d) * vdx + (dy / d) * vdy > 0.5 then return true end
+        if entity.is_alive(p) and not entity.is_dormant(p) then
+            local px, py, pz = entity.get_origin(p)
+            if px then
+                -- trace to the chest; skipping our own player entity
+                local ok2, fraction, hit = pcall(client.trace_line, me, mx, my, eye_z, px, py, pz + 55)
+                if ok2 and (hit == p or (type(fraction) == "number" and fraction > 0.95)) then
+                    return true
                 end
             end
         end
@@ -182,17 +177,16 @@ local function on_setup_command(cmd)
     hud.speed = speed
     hud.threshold = cfg.speed
 
-    -- Engage ONLY when actually peeking onto an enemy (moving toward one within
-    -- range) or during the 1s hold after. We do NOT use client.current_threat()
-    -- as a trigger: gamesense keeps that set on the ragebot's target even when
-    -- you cannot shoot, which made the auto stop brake almost constantly.
-    -- Peeking already means "about to come out onto an enemy", so it covers both
-    -- stopping before the shot and stopping to take it; the hold covers after.
-    local peeking = peeking_enemy(me, ANTICIPATE_UNITS)
-    if peeking then
+    -- Engage ONLY when an enemy is actually visible (clear line of sight), or
+    -- during the 1s hold after. Behind cover there is no line of sight so you
+    -- move completely freely - this is the fix for braking all the time. We do
+    -- NOT use client.current_threat() (gamesense keeps it set even when you
+    -- cannot shoot, which braked constantly).
+    local visible = can_see_enemy(me)
+    if visible then
         hold_until = globals.curtime() + HOLD_SECONDS
     end
-    local stopping = peeking or globals.curtime() < hold_until
+    local stopping = visible or globals.curtime() < hold_until
     hud.engaged = stopping
     if not stopping then return end
     if speed <= cfg.speed then return end   -- already slow enough
