@@ -120,21 +120,34 @@ end
 -- we move completely freely - that is what stops the constant braking. The
 -- counter-strafe halts us within a couple of ticks, so we are stopped in time
 -- for the shot the instant the enemy is exposed.
+local LOOKAHEAD = 0.30   -- seconds of movement to look ahead (stop AS you emerge)
+
 local function shot_available(me)
     local mx, my, mz = entity.get_origin(me)
     if not mx then return false end
     local eye_z = mz + (entity.get_prop(me, "m_vecViewOffset[2]") or 64)
 
-    local function los_to(ent)
-        local tx, ty, tz = entity.get_origin(ent)
-        if not tx then return false end
+    -- also test from where we WILL be a moment from now, so the brake starts
+    -- just before we are fully exposed and we are already stopped as we emerge
+    local vx, vy = entity.get_prop(me, "m_vecVelocity")
+    local pmx, pmy = mx, my
+    if vx then pmx, pmy = mx + vx * LOOKAHEAD, my + vy * LOOKAHEAD end
+
+    local function los_from(sx, sy, ent, tx, ty, tz)
         for _, dz in ipairs({ 46, 64 }) do   -- try chest then head
-            local ok, frac, hit = pcall(client.trace_line, me, mx, my, eye_z, tx, ty, tz + dz)
+            local ok, frac, hit = pcall(client.trace_line, me, sx, sy, eye_z, tx, ty, tz + dz)
             if ok and (hit == ent or (type(frac) == "number" and frac > 0.95)) then
                 return true
             end
         end
         return false
+    end
+
+    local function los_to(ent)
+        local tx, ty, tz = entity.get_origin(ent)
+        if not tx then return false end
+        -- current position OR the predicted (about-to-emerge) position
+        return los_from(mx, my, ent, tx, ty, tz) or los_from(pmx, pmy, ent, tx, ty, tz)
     end
 
     -- the ragebot's chosen target is the one that will actually be shot
