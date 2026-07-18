@@ -2972,23 +2972,55 @@ local trashtalk_state = {
 
 local config_system = {
     configs = {},
-    selected_name = ""
+    selected_name = "",
+    dir = "csgo/necrotool/configs",   -- relative (writefile/readfile are game-root rooted)
+    ext = ".cfg",
+    root = ""                         -- absolute game root (folder that contains csgo)
 }
 
+-- ===== file-based config storage =====
+-- Configs are stored as real files on disk at  csgo/necrotool/configs/<name>.cfg
+-- (each file holds the serialized settings), so they can be shared, backed up
+-- or edited by hand. The folder is created via the game's own filesystem
+-- (VFileSystem017::CreateDirHierarchy) with a WinAPI CreateDirectoryA fallback,
+-- then registered as a search path ("NECROCFG") so the list can enumerate it.
+do
+    local root_buf = char_buffer(160)
+    current_directory(root_buf, ffi.sizeof(root_buf))
+    config_system.root = ffi.string(root_buf)
+    local abs = string.format("%s\\%s", config_system.root, config_system.dir:gsub("/", "\\"))
 
+    pcall(function()
+        local create_dir = vmt_bind("filesystem_stdio.dll", "VFileSystem017", 22, "void(__thiscall*)(void*, const char*, const char*)")
+        add_to_searchpath(config_system.root, "NECRO_ROOT", 0)
+        create_dir("csgo/necrotool", "NECRO_ROOT")
+        create_dir("csgo/necrotool/configs", "NECRO_ROOT")
+    end)
+    pcall(ffi.cdef, "int CreateDirectoryA(const char* path, void* sec);")
+    pcall(function() ffi.C.CreateDirectoryA(string.format("%s\\csgo\\necrotool", config_system.root), nil) end)
+    pcall(function() ffi.C.CreateDirectoryA(abs, nil) end)
+    add_to_searchpath(abs, "NECROCFG", 0)
+end
+
+-- scan the configs folder and rebuild the name list from the .cfg files on disk
 local function load_config_list()
-    local saved = database.read("uwu_config_list")
-    if saved and type(saved) == "table" then
-        config_system.configs = saved
-    else
-        config_system.configs = {}
+    local list = {}
+    local handle = int_ptr()
+    local file = find_first("*", "NECROCFG", handle)
+    while file ~= nil do
+        local fn = ffi.string(file)
+        if find_is_directory(handle[0]) == false and fn:sub(-#config_system.ext) == config_system.ext then
+            list[#list + 1] = fn:sub(1, #fn - #config_system.ext)
+        end
+        file = find_next(handle[0])
     end
+    pcall(find_close, handle[0])
+    table.sort(list)
+    config_system.configs = list
 end
 
-
-local function save_config_list()
-    database.write("uwu_config_list", config_system.configs)
-end
+-- kept as a no-op: with file storage the folder IS the source of truth
+local function save_config_list() end
 
 load_config_list()
 
@@ -4307,29 +4339,20 @@ end
 
 ui.set_callback(UI.config_save, function()
     local name = ui.get(UI.config_name)
-    if name == "" then
+    if not name or name == "" then
+        ui.set(UI.config_status, "\aFFD700FF  ♡ Enter a config name first")
         return
     end
-    
-    local settings = get_all_settings()
-    database.write("uwu_config_" .. name, settings)
-    
-    
-    local exists = false
-    for i = 1, #config_system.configs do
-        if config_system.configs[i] == name then
-            exists = true
-            break
-        end
-    end
-    
-    if not exists then
-        config_system.configs[#config_system.configs + 1] = name
-        save_config_list()
-    end
-    
+
+    -- strip characters that are illegal in Windows filenames
+    name = name:gsub('[\\/:%*%?"<>|]', "_")
+
+    local data = serialize_table(get_all_settings())
+    local ok = pcall(writefile, config_system.dir .. "/" .. name .. config_system.ext, data)
+
+    load_config_list()          -- re-scan the folder so the new file shows up
     update_config_list()
-    ui.set(UI.config_status, "\aFFFFFFFF  ♡ Config saved")
+    ui.set(UI.config_status, ok and "\aFFFFFFFF  ♡ Config saved" or "\aFF5555FF  ♡ Save failed")
 end)
 
 ui.set_callback(UI.config_load, function()
@@ -4337,15 +4360,16 @@ ui.set_callback(UI.config_load, function()
     if selected < 1 or selected > #config_system.configs then
         return
     end
-    
+
     local name = config_system.configs[selected]
-    local settings = database.read("uwu_config_" .. name)
-    
-    if not settings then
+    local ok, data = pcall(readfile, config_system.dir .. "/" .. name .. config_system.ext)
+
+    if not ok or not data or data == "" then
+        ui.set(UI.config_status, "\aFF5555FF  ♡ Load failed")
         return
     end
-    
-    apply_settings(settings)
+
+    apply_settings(deserialize_table(data))
     update_visibility()
     ui.set(UI.config_status, "\aFFFFFFFF  ♡ Config loaded")
 end)
@@ -4355,10 +4379,19 @@ ui.set_callback(UI.config_delete, function()
     if selected < 1 or selected > #config_system.configs then
         return
     end
-    
+
     local name = config_system.configs[selected]
-    table.remove(config_system.configs, selected)
-    save_config_list()
+    -- delete the file on disk via WinAPI (writefile can't remove files); if that
+    -- is unavailable, fall back to truncating it so it no longer holds a config
+    local abs = string.format("%s\\%s\\%s%s", config_system.root,
+        config_system.dir:gsub("/", "\\"), name, config_system.ext)
+    pcall(ffi.cdef, "int DeleteFileA(const char* path);")
+    local deleted = pcall(function() ffi.C.DeleteFileA(abs) end)
+    if not deleted then
+        pcall(writefile, config_system.dir .. "/" .. name .. config_system.ext, "")
+    end
+
+    load_config_list()
     update_config_list()
     ui.set(UI.config_status, "\aFFFFFFFF  ♡ Config deleted")
 end)
