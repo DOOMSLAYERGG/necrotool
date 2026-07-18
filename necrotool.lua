@@ -2576,7 +2576,7 @@ UI.setup_focus = ui.new_combobox("LUA", "A", "\aFFFFFFFF  setup focus", {
     "Model changer", "Hit sound", "Death sound", "Viewmodel", "Console color", "Aspect ratio", "Thirdperson", "Skybox", "FOV override",
     "Clantag", "Watermark", "Spectators", "Keybinds", "Indicators",
     "Miss log", "First person nade", "FPS Boost", "Warmup", "Animation breaker",
-    "Jump scout helper", "Aimbot helper", "Ideal tick", "Unsafe exploit recharge"
+    "Jump scout helper", "Aimbot helper", "Ideal tick", "Unsafe exploit recharge", "Dynamic hitchance"
 })
 ui.set_visible(UI.setup_focus, false)
 UI.setup_jump = function(name)
@@ -2595,7 +2595,7 @@ end
 
 -- rinnegan-style "Setup" rows for the Rage features (grey = off, accent = on)
 do
-    local names = {"Jump scout helper", "Aimbot helper", "Ideal tick", "Unsafe exploit recharge"}
+    local names = {"Jump scout helper", "Aimbot helper", "Ideal tick", "Unsafe exploit recharge", "Dynamic hitchance"}
     for _, nm in ipairs(names) do
         UI.su_off[nm] = ui.new_button("LUA", "A", "\aC8C8C8C8 Setup " .. nm, function() UI.setup_jump(nm) end)
         UI.su_on[nm]  = ui.new_button("LUA", "A", "\aB9BEFFFF Setup " .. nm, function() UI.setup_jump(nm) end)
@@ -2655,6 +2655,9 @@ UI.ideal_tick          = ui.new_checkbox("LUA", "A", "\aFFFFFFFF  Ideal tick")
 UI.ideal_tick_info     = ui.new_label("LUA", "A", "\aC8C8C8C8    Forces Double tap + Auto peek while enabled")
 UI.unsafe_recharge     = ui.new_checkbox("LUA", "A", "\aFFFFFFFF  Unsafe exploit recharge")
 UI.unsafe_recharge_info= ui.new_label("LUA", "A", "\aC8C8C8C8    Auto-recharges the double tap exploit")
+UI.dynamic_hitchance   = ui.new_checkbox("LUA", "A", "\aFFFFFFFF  Dynamic hitchance")
+UI.dynamic_hitchance_info  = ui.new_label("LUA", "A", "\aC8C8C8C8    Always-on: best hit chance per weapon & distance")
+UI.dynamic_hitchance_info2 = ui.new_label("LUA", "A", "\aC8C8C8C8    Any weapon, any movement, scoped or not")
 
 -- Rage-tab logic (ported/adapted from EmberLash v3, neverlose -> gamesense).
 -- Everything is guarded: references are pcall'd (a missing one just disables
@@ -2763,9 +2766,60 @@ do
         end
     end
 
+    -- ---- Dynamic hitchance ----------------------------------------------
+    -- Always-on version of the jump-scout idea: pick the best minimum hit
+    -- chance for the CURRENT weapon at the CURRENT distance to the threat, for
+    -- ANY weapon, in ANY movement state, scoped or not. Each weapon class gets a
+    -- close/far hit-chance pair; the value is interpolated by distance (higher up
+    -- close, lower far away, clamped at 1350u). Restores the user's own hit
+    -- chance the moment it turns off or there is no threat.
+    local dh = { active = false, hc = nil }
+    local function dh_restore()
+        if dh.active and r_hc and dh.hc ~= nil then pcall(ui.set, r_hc, dh.hc) end
+        dh.active, dh.hc = false, nil
+    end
+    local function dh_weapon_range(cn)
+        cn = cn or ""
+        if cn == "CWeaponSSG08" or cn == "CWeaponAWP" then return 75, 45 end          -- snipers
+        if cn == "CWeaponG3SG1" or cn == "CWeaponSCAR20" then return 62, 40 end        -- auto snipers
+        if cn == "CDEagle" or cn == "CWeaponRevolver" then return 55, 33 end           -- heavy pistols
+        if cn:find("Nova") or cn:find("XM1014") or cn:find("Mag7") or cn:find("Sawedoff") then return 60, 18 end -- shotguns
+        if cn:find("Glock") or cn:find("P2000") or cn:find("Usp") or cn:find("USP")
+           or cn:find("P250") or cn:find("FiveSeven") or cn:find("Tec9") or cn:find("CZ75")
+           or cn:find("Elite") then return 46, 26 end                                  -- pistols
+        if cn:find("Mp9") or cn:find("MP9") or cn:find("Mac10") or cn:find("Mp7") or cn:find("MP7")
+           or cn:find("Ump45") or cn:find("P90") or cn:find("Bizon") or cn:find("Mp5") or cn:find("MP5") then
+            return 46, 28                                                              -- smgs
+        end
+        if cn:find("M249") or cn:find("Negev") then return 46, 26 end                  -- lmgs
+        return 55, 33                                                                  -- rifles / default
+    end
+    local function dynamic_hitchance_run(me)
+        if not ui.get(UI.dynamic_hitchance) or not r_hc then dh_restore() return end
+
+        local weapon = entity.get_player_weapon(me)
+        local target = client.current_threat()
+        if not weapon or not target then dh_restore() return end
+
+        local x1, y1, z1 = entity.get_origin(me)
+        local x2, y2, z2 = entity.get_origin(target)
+        if not x1 or not x2 then dh_restore() return end
+
+        if not dh.active then
+            dh.hc = ui.get(r_hc)   -- remember the user's value once, on activation
+            dh.active = true
+        end
+
+        local close_hc, far_hc = dh_weapon_range(entity.get_classname(weapon))
+        local dx, dy, dz = x1 - x2, y1 - y2, z1 - z2
+        local dist = math.min(math.sqrt(dx*dx + dy*dy + dz*dz), 1350)
+        local hc = math.floor((close_hc - (close_hc - far_hc) * (dist / 1350)) + 0.5)
+        pcall(ui.set, r_hc, hc)
+    end
+
     local function rage_setup_command()
         if not ui.get(UI.enabled) then
-            js_restore(); it_restore()
+            js_restore(); it_restore(); dh_restore()
             if ah.active and r_fsp and ah.fsp ~= nil then pcall(ui.set, r_fsp, ah.fsp) end
             ah.active, ah.fsp = false, nil
             return
@@ -2774,8 +2828,10 @@ do
         if me and entity.is_alive(me) then
             jump_scout_run(me)
             unsafe_recharge_run(me)
+            dynamic_hitchance_run(me)
         else
             js_restore()
+            dh_restore()
         end
         ah_run()
         ideal_tick_run()
@@ -3791,6 +3847,7 @@ local function update_visibility_rage()
     row("Aimbot helper", UI.aimbot_helper)
     row("Ideal tick", UI.ideal_tick)
     row("Unsafe exploit recharge", UI.unsafe_recharge)
+    row("Dynamic hitchance", UI.dynamic_hitchance)
 
     -- the enable toggle + settings are shown only for the focused feature
     local f_js = is_rage and focus == "Jump scout helper"
@@ -3808,6 +3865,11 @@ local function update_visibility_rage()
     local f_ur = is_rage and focus == "Unsafe exploit recharge"
     ui.set_visible(UI.unsafe_recharge, f_ur)
     ui.set_visible(UI.unsafe_recharge_info, f_ur and ui.get(UI.unsafe_recharge))
+
+    local f_dh = is_rage and focus == "Dynamic hitchance"
+    ui.set_visible(UI.dynamic_hitchance, f_dh)
+    ui.set_visible(UI.dynamic_hitchance_info, f_dh and ui.get(UI.dynamic_hitchance))
+    ui.set_visible(UI.dynamic_hitchance_info2, f_dh and ui.get(UI.dynamic_hitchance))
 end
 
 local function update_visibility()
@@ -3886,6 +3948,7 @@ ui.set_callback(UI.jump_scout, function() update_visibility() end)
 ui.set_callback(UI.aimbot_helper, function() update_visibility() end)
 ui.set_callback(UI.ideal_tick, function() update_visibility() end)
 ui.set_callback(UI.unsafe_recharge, function() update_visibility() end)
+ui.set_callback(UI.dynamic_hitchance, function() update_visibility() end)
 ui.set_callback(UI.fog, update_visibility)
 ui.set_callback(UI.fog_style, update_visibility)
 ui.set_callback(UI.wall_color, update_visibility)
@@ -4258,6 +4321,7 @@ local CONFIG_SKIP = {
     -- Rage tab info labels (not saveable; the checkboxes above them ARE saved)
     jump_scout_info = true, aimbot_helper_info = true,
     ideal_tick_info = true, unsafe_recharge_info = true,
+    dynamic_hitchance_info = true, dynamic_hitchance_info2 = true,
 }
 
 local function get_all_settings()
