@@ -113,28 +113,42 @@ local function weapon_category(cn)
     return "Rifles"
 end
 
--- We only brake when an enemy is actually VISIBLE (a clear line from our eyes to
--- them), i.e. we have peeked out and can take the shot. Behind cover there is no
--- line of sight, so we move completely freely - this is what stops the constant
--- braking. The counter-strafe halts us within a couple of ticks, so we are
--- effectively stopped the instant we clear the corner.
-local function can_see_enemy(me)
+-- We brake to take the shot: an enemy must be actually shootable right now,
+-- i.e. there is a clear line from our eyes to them. Preference is given to the
+-- ragebot's current target (the one it is about to fire at); if that has no line
+-- of sight we check any other visible enemy. Behind cover nothing is visible, so
+-- we move completely freely - that is what stops the constant braking. The
+-- counter-strafe halts us within a couple of ticks, so we are stopped in time
+-- for the shot the instant the enemy is exposed.
+local function shot_available(me)
     local mx, my, mz = entity.get_origin(me)
     if not mx then return false end
     local eye_z = mz + (entity.get_prop(me, "m_vecViewOffset[2]") or 64)
 
-    local ok, players = pcall(entity.get_players, true)  -- enemies only
-    if not ok or not players then return false end
+    local function los_to(ent)
+        local tx, ty, tz = entity.get_origin(ent)
+        if not tx then return false end
+        for _, dz in ipairs({ 46, 64 }) do   -- try chest then head
+            local ok, frac, hit = pcall(client.trace_line, me, mx, my, eye_z, tx, ty, tz + dz)
+            if ok and (hit == ent or (type(frac) == "number" and frac > 0.95)) then
+                return true
+            end
+        end
+        return false
+    end
 
-    for _, p in ipairs(players) do
-        if entity.is_alive(p) and not entity.is_dormant(p) then
-            local px, py, pz = entity.get_origin(p)
-            if px then
-                -- trace to the chest; skipping our own player entity
-                local ok2, fraction, hit = pcall(client.trace_line, me, mx, my, eye_z, px, py, pz + 55)
-                if ok2 and (hit == p or (type(fraction) == "number" and fraction > 0.95)) then
-                    return true
-                end
+    -- the ragebot's chosen target is the one that will actually be shot
+    local threat = client.current_threat()
+    if threat and entity.is_alive(threat) and not entity.is_dormant(threat) and los_to(threat) then
+        return true
+    end
+
+    -- otherwise any other visible enemy
+    local ok, players = pcall(entity.get_players, true)   -- enemies only
+    if ok and players then
+        for _, p in ipairs(players) do
+            if entity.is_alive(p) and not entity.is_dormant(p) and los_to(p) then
+                return true
             end
         end
     end
@@ -177,16 +191,14 @@ local function on_setup_command(cmd)
     hud.speed = speed
     hud.threshold = cfg.speed
 
-    -- Engage ONLY when an enemy is actually visible (clear line of sight), or
-    -- during the 1s hold after. Behind cover there is no line of sight so you
-    -- move completely freely - this is the fix for braking all the time. We do
-    -- NOT use client.current_threat() (gamesense keeps it set even when you
-    -- cannot shoot, which braked constantly).
-    local visible = can_see_enemy(me)
-    if visible then
+    -- Stop for the shot: brake the instant a shot is actually available (an
+    -- enemy is visible / the ragebot's target has line of sight), and hold it for
+    -- 1s after. Behind cover nothing is visible, so you move completely freely.
+    local can_shoot = shot_available(me)
+    if can_shoot then
         hold_until = globals.curtime() + HOLD_SECONDS
     end
-    local stopping = visible or globals.curtime() < hold_until
+    local stopping = can_shoot or globals.curtime() < hold_until
     hud.engaged = stopping
     if not stopping then return end
     if speed <= cfg.speed then return end   -- already slow enough
