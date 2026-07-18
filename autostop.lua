@@ -120,7 +120,7 @@ end
 -- we move completely freely - that is what stops the constant braking. The
 -- counter-strafe halts us within a couple of ticks, so we are stopped in time
 -- for the shot the instant the enemy is exposed.
-local LOOKAHEAD = 0.30   -- seconds of movement to look ahead (stop AS you emerge)
+local LOOKAHEAD = 0.18   -- seconds of movement to look ahead (stop right as you emerge)
 
 local function shot_available(me)
     local mx, my, mz = entity.get_origin(me)
@@ -172,8 +172,9 @@ end
 -- start braking even without line of sight - you are about to swing/peek out onto
 -- them. The short range + "moving toward" gate keep this from firing all the time
 -- (holding, standing or moving away never triggers it).
-local CLOSE_PEEK_RANGE = 420   -- units
+local CLOSE_PEEK_RANGE = 150   -- units (tight: only right before you emerge)
 local MIN_PEEK_SPEED    = 30    -- must actually be moving
+local PEEK_DOT          = 0.6   -- must be moving fairly directly toward them
 
 local function about_to_peek(me)
     local vx, vy = entity.get_prop(me, "m_vecVelocity")
@@ -196,7 +197,7 @@ local function about_to_peek(me)
                 local d2 = dx * dx + dy * dy
                 if d2 > 0 and d2 <= r2 then
                     local d = math.sqrt(d2)
-                    if (dx / d) * vdx + (dy / d) * vdy > 0.4 then return true end
+                    if (dx / d) * vdx + (dy / d) * vdy > PEEK_DOT then return true end
                 end
             end
         end
