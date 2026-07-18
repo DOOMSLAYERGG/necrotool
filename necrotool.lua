@@ -2576,7 +2576,7 @@ UI.setup_focus = ui.new_combobox("LUA", "A", "\aFFFFFFFF  setup focus", {
     "Model changer", "Hit sound", "Death sound", "Viewmodel", "Console color", "Aspect ratio", "Thirdperson", "Skybox", "FOV override",
     "Clantag", "Watermark", "Spectators", "Keybinds", "Indicators",
     "Miss log", "First person nade", "FPS Boost", "Warmup", "Animation breaker",
-    "Jump scout helper", "Aimbot helper", "Ideal tick", "Unsafe exploit recharge", "Dynamic hitchance"
+    "Jump scout helper", "Aimbot helper", "Ideal tick", "Unsafe exploit recharge", "Dynamic hitchance", "Predict"
 })
 ui.set_visible(UI.setup_focus, false)
 UI.setup_jump = function(name)
@@ -2595,7 +2595,7 @@ end
 
 -- rinnegan-style "Setup" rows for the Rage features (grey = off, accent = on)
 do
-    local names = {"Jump scout helper", "Aimbot helper", "Ideal tick", "Unsafe exploit recharge", "Dynamic hitchance"}
+    local names = {"Jump scout helper", "Aimbot helper", "Ideal tick", "Unsafe exploit recharge", "Dynamic hitchance", "Predict"}
     for _, nm in ipairs(names) do
         UI.su_off[nm] = ui.new_button("LUA", "A", "\aC8C8C8C8 Setup " .. nm, function() UI.setup_jump(nm) end)
         UI.su_on[nm]  = ui.new_button("LUA", "A", "\aB9BEFFFF Setup " .. nm, function() UI.setup_jump(nm) end)
@@ -2659,6 +2659,13 @@ UI.dynamic_hitchance   = ui.new_checkbox("LUA", "A", "\aFFFFFFFF  Dynamic hitcha
 UI.dynamic_hitchance_mode  = ui.new_combobox("LUA", "A", "\aFFFFFFFF    Curve", { "distance < hitchance", "distance > hitchance" })
 UI.dynamic_hitchance_info  = ui.new_label("LUA", "A", "\aC8C8C8C8    < : farther = lower hit chance")
 UI.dynamic_hitchance_info2 = ui.new_label("LUA", "A", "\aC8C8C8C8    > : farther = higher hit chance")
+UI.predict        = ui.new_checkbox("LUA", "A", "\aFFFFFFFF  Predict")
+UI.predict_info   = ui.new_label("LUA", "A", "\aC8C8C8C8    Simulates enemy movement forward and marks it")
+UI.predict_ticks  = ui.new_slider("LUA", "A", "\aFFFFFFFF    Ticks ahead", 1, 64, 12)
+UI.predict_style  = ui.new_combobox("LUA", "A", "\aFFFFFFFF    Marker", { "Dot", "Cross", "Circle", "Box" })
+UI.predict_size   = ui.new_slider("LUA", "A", "\aFFFFFFFF    Marker size", 2, 30, 7)
+UI.predict_line   = ui.new_checkbox("LUA", "A", "\aFFFFFFFF    Trace line")
+UI.predict_color  = ui.new_color_picker("LUA", "A", "\aFFFFFFFF    Color\npredict", 120, 235, 120, 255)
 
 -- Rage-tab logic (ported/adapted from EmberLash v3, neverlose -> gamesense).
 -- Everything is guarded: references are pcall'd (a missing one just disables
@@ -2847,6 +2854,95 @@ do
     end
 
     client.set_event_callback('setup_command', rage_setup_command)
+end
+
+-- ===== Predict (Rage) =====
+-- Original movement prediction: steps each enemy forward tick-by-tick using the
+-- CS:GO movement model - gravity while airborne, ground friction while on the
+-- floor - and draws where they will be N ticks from now. Runs on its own paint
+-- callback inside a do-block so its helpers stay block-scoped (200-local limit).
+do
+    local SV_GRAVITY  = 800
+    local SV_FRICTION = 5.2
+    local SV_STOPSPEED = 80
+
+    -- returns the predicted world position of `ent` after `ticks` ticks
+    local function predict_position(ent, ticks)
+        local x, y, z = entity.get_origin(ent)
+        local vx, vy, vz = entity.get_prop(ent, "m_vecVelocity")
+        if not x or not vx then return nil end
+        vz = vz or 0
+
+        local dt = globals.tickinterval()
+        local flags = entity.get_prop(ent, "m_fFlags") or 0
+        local on_ground = bit.band(flags, 1) == 1
+
+        for _ = 1, ticks do
+            if on_ground then
+                -- ground friction (matches the engine's PM_Friction step)
+                local speed = math.sqrt(vx*vx + vy*vy)
+                if speed > 0 then
+                    local drop = math.max(speed, SV_STOPSPEED) * SV_FRICTION * dt
+                    local mul = math.max(speed - drop, 0) / speed
+                    vx, vy = vx * mul, vy * mul
+                end
+            else
+                vz = vz - SV_GRAVITY * dt      -- gravity while airborne
+            end
+            x, y, z = x + vx * dt, y + vy * dt, z + vz * dt
+        end
+        return x, y, z
+    end
+
+    local function draw_predict()
+        if not ui.get(UI.enabled) or not ui.get(UI.predict) then return end
+
+        local me = entity.get_local_player()
+        local ticks = ui.get(UI.predict_ticks)
+        local style = ui.get(UI.predict_style)
+        local size  = ui.get(UI.predict_size)
+        local line  = ui.get(UI.predict_line)
+        local r, g, b, a = ui.get(UI.predict_color)
+
+        local ok, players = pcall(entity.get_players, true)   -- enemies only
+        if not ok or not players then return end
+
+        for _, p in ipairs(players) do
+            if p ~= me and entity.is_alive(p) and not entity.is_dormant(p) then
+                local px, py, pz = predict_position(p, ticks)
+                if px then
+                    local sx, sy = renderer.world_to_screen(px, py, pz)
+                    if sx then
+                        if style == "Dot" then
+                            renderer.circle(sx, sy, r, g, b, a, size, 0, 1)
+                        elseif style == "Cross" then
+                            renderer.line(sx - size, sy, sx + size, sy, r, g, b, a)
+                            renderer.line(sx, sy - size, sx, sy + size, r, g, b, a)
+                        elseif style == "Circle" then
+                            renderer.circle_outline(sx, sy, r, g, b, a, size, 0, 1, 2)
+                        else -- Box
+                            renderer.rectangle(sx - size, sy - size, size * 2, 2, r, g, b, a)
+                            renderer.rectangle(sx - size, sy + size - 2, size * 2, 2, r, g, b, a)
+                            renderer.rectangle(sx - size, sy - size, 2, size * 2, r, g, b, a)
+                            renderer.rectangle(sx + size - 2, sy - size, 2, size * 2, r, g, b, a)
+                        end
+
+                        if line then
+                            local cx, cy, cz = entity.get_origin(p)
+                            if cx then
+                                local csx, csy = renderer.world_to_screen(cx, cy, cz)
+                                if csx then
+                                    renderer.line(csx, csy, sx, sy, r, g, b, a * 0.5)
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    client.set_event_callback('paint_ui', draw_predict)
 end
 
 -- Forward declaration (функция определяется ниже, но используется в callback выше по коду)
@@ -3857,6 +3953,7 @@ local function update_visibility_rage()
     row("Ideal tick", UI.ideal_tick)
     row("Unsafe exploit recharge", UI.unsafe_recharge)
     row("Dynamic hitchance", UI.dynamic_hitchance)
+    row("Predict", UI.predict)
 
     -- the enable toggle + settings are shown only for the focused feature
     local f_js = is_rage and focus == "Jump scout helper"
@@ -3880,6 +3977,16 @@ local function update_visibility_rage()
     ui.set_visible(UI.dynamic_hitchance_mode, f_dh and ui.get(UI.dynamic_hitchance))
     ui.set_visible(UI.dynamic_hitchance_info, f_dh and ui.get(UI.dynamic_hitchance))
     ui.set_visible(UI.dynamic_hitchance_info2, f_dh and ui.get(UI.dynamic_hitchance))
+
+    local f_pred = is_rage and focus == "Predict"
+    local pred_on = ui.get(UI.predict)
+    ui.set_visible(UI.predict, f_pred)
+    ui.set_visible(UI.predict_info, f_pred and pred_on)
+    ui.set_visible(UI.predict_ticks, f_pred and pred_on)
+    ui.set_visible(UI.predict_style, f_pred and pred_on)
+    ui.set_visible(UI.predict_size, f_pred and pred_on)
+    ui.set_visible(UI.predict_line, f_pred and pred_on)
+    ui.set_visible(UI.predict_color, f_pred and pred_on)
 end
 
 local function update_visibility()
@@ -3959,6 +4066,7 @@ ui.set_callback(UI.aimbot_helper, function() update_visibility() end)
 ui.set_callback(UI.ideal_tick, function() update_visibility() end)
 ui.set_callback(UI.unsafe_recharge, function() update_visibility() end)
 ui.set_callback(UI.dynamic_hitchance, function() update_visibility() end)
+ui.set_callback(UI.predict, function() update_visibility() end)
 ui.set_callback(UI.fog, update_visibility)
 ui.set_callback(UI.fog_style, update_visibility)
 ui.set_callback(UI.wall_color, update_visibility)
@@ -4332,6 +4440,7 @@ local CONFIG_SKIP = {
     jump_scout_info = true, aimbot_helper_info = true,
     ideal_tick_info = true, unsafe_recharge_info = true,
     dynamic_hitchance_info = true, dynamic_hitchance_info2 = true,
+    predict_info = true,
 }
 
 local function get_all_settings()
