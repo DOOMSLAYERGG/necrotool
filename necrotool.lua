@@ -2656,8 +2656,9 @@ UI.ideal_tick_info     = ui.new_label("LUA", "A", "\aC8C8C8C8    Forces Double t
 UI.unsafe_recharge     = ui.new_checkbox("LUA", "A", "\aFFFFFFFF  Unsafe exploit recharge")
 UI.unsafe_recharge_info= ui.new_label("LUA", "A", "\aC8C8C8C8    Auto-recharges the double tap exploit")
 UI.dynamic_hitchance   = ui.new_checkbox("LUA", "A", "\aFFFFFFFF  Dynamic hitchance")
-UI.dynamic_hitchance_info  = ui.new_label("LUA", "A", "\aC8C8C8C8    Always-on: best hit chance per weapon & distance")
-UI.dynamic_hitchance_info2 = ui.new_label("LUA", "A", "\aC8C8C8C8    Any weapon, any movement, scoped or not")
+UI.dynamic_hitchance_mode  = ui.new_combobox("LUA", "A", "\aFFFFFFFF    Curve", { "distance < hitchance", "distance > hitchance" })
+UI.dynamic_hitchance_info  = ui.new_label("LUA", "A", "\aC8C8C8C8    < : farther = lower hit chance")
+UI.dynamic_hitchance_info2 = ui.new_label("LUA", "A", "\aC8C8C8C8    > : farther = higher hit chance")
 
 -- Rage-tab logic (ported/adapted from EmberLash v3, neverlose -> gamesense).
 -- Everything is guarded: references are pcall'd (a missing one just disables
@@ -2813,8 +2814,16 @@ do
         local close_hc, far_hc = dh_weapon_range(entity.get_classname(weapon))
         local dx, dy, dz = x1 - x2, y1 - y2, z1 - z2
         local dist = math.min(math.sqrt(dx*dx + dy*dy + dz*dz), 1350)
-        local hc = math.floor((close_hc - (close_hc - far_hc) * (dist / 1350)) + 0.5)
-        pcall(ui.set, r_hc, hc)
+        local t = dist / 1350   -- 0 at point blank, 1 at 1350u+
+        -- close_hc is the higher endpoint, far_hc the lower one. The Curve mode
+        -- picks which way distance drives it.
+        local hc
+        if ui.get(UI.dynamic_hitchance_mode) == "distance > hitchance" then
+            hc = far_hc + (close_hc - far_hc) * t   -- farther = higher hit chance
+        else
+            hc = close_hc - (close_hc - far_hc) * t -- farther = lower hit chance
+        end
+        pcall(ui.set, r_hc, math.floor(hc + 0.5))
     end
 
     local function rage_setup_command()
@@ -3868,6 +3877,7 @@ local function update_visibility_rage()
 
     local f_dh = is_rage and focus == "Dynamic hitchance"
     ui.set_visible(UI.dynamic_hitchance, f_dh)
+    ui.set_visible(UI.dynamic_hitchance_mode, f_dh and ui.get(UI.dynamic_hitchance))
     ui.set_visible(UI.dynamic_hitchance_info, f_dh and ui.get(UI.dynamic_hitchance))
     ui.set_visible(UI.dynamic_hitchance_info2, f_dh and ui.get(UI.dynamic_hitchance))
 end
