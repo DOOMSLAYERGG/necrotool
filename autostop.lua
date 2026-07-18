@@ -182,18 +182,17 @@ local function on_setup_command(cmd)
     hud.speed = speed
     hud.threshold = cfg.speed
 
-    -- Engage in exactly three situations:
-    --   * a live threat  -> stop us so the shot can be taken
-    --   * peeking onto an enemy (moving toward one in range) -> stop before we
-    --     clear the corner
-    --   * the 1s hold after either of the above -> stay accurate right after
-    -- Standing / holding / moving away no longer brakes (fixes constant stop).
-    local threat  = client.current_threat() ~= nil
+    -- Engage ONLY when actually peeking onto an enemy (moving toward one within
+    -- range) or during the 1s hold after. We do NOT use client.current_threat()
+    -- as a trigger: gamesense keeps that set on the ragebot's target even when
+    -- you cannot shoot, which made the auto stop brake almost constantly.
+    -- Peeking already means "about to come out onto an enemy", so it covers both
+    -- stopping before the shot and stopping to take it; the hold covers after.
     local peeking = peeking_enemy(me, ANTICIPATE_UNITS)
-    if threat or peeking then
+    if peeking then
         hold_until = globals.curtime() + HOLD_SECONDS
     end
-    local stopping = threat or peeking or globals.curtime() < hold_until
+    local stopping = peeking or globals.curtime() < hold_until
     hud.engaged = stopping
     if not stopping then return end
     if speed <= cfg.speed then return end   -- already slow enough
