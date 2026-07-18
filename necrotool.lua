@@ -2242,9 +2242,23 @@ current_directory(current_path, ffi.sizeof(current_path))
 current_path = string.format("%s\\csgo\\sound\\uwuhook", ffi.string(current_path))
 add_to_searchpath(current_path, "UWUHOOK", 0)
 
-local current_path2 = char_buffer(128)
+-- render image folder: create csgo/materials/panorama/images/necrokill on start
+-- (via the game's own filesystem, WinAPI CreateDirectoryA as a fallback), then
+-- register it as a search path so the render-image list enumerates its images.
+local current_path2 = char_buffer(160)
 current_directory(current_path2, ffi.sizeof(current_path2))
-current_path2 = string.format("%s\\csgo\\materials\\panorama\\images\\icons\\equipment\\uwukill", ffi.string(current_path2))
+local necrokill_root = ffi.string(current_path2)
+current_path2 = string.format("%s\\csgo\\materials\\panorama\\images\\necrokill", necrokill_root)
+
+pcall(function()
+    local create_dir = vmt_bind("filesystem_stdio.dll", "VFileSystem017", 22, "void(__thiscall*)(void*, const char*, const char*)")
+    add_to_searchpath(necrokill_root, "NECRO_ROOT", 0)
+    create_dir("csgo/materials/panorama/images/necrokill", "NECRO_ROOT")
+end)
+pcall(ffi.cdef, "int CreateDirectoryA(const char* path, void* sec);")
+pcall(function() ffi.C.CreateDirectoryA(current_path2, nil) end)
+pcall(writefile, "csgo/materials/panorama/images/necrokill/readme.txt", "Put your render image .png files in this folder, then pick them in necrotool -> Render image.")
+
 add_to_searchpath(current_path2, "UWUKILL", 0)
 
 local media = {
@@ -5888,7 +5902,7 @@ local function draw_kill_image()
 
     if not kill_image_state.current_image then return end
 
-    local file_data = readfile("csgo/materials/panorama/images/icons/equipment/uwukill/" .. kill_image_state.current_image)
+    local file_data = readfile("csgo/materials/panorama/images/necrokill/" .. kill_image_state.current_image)
     if not file_data then return end
 
     local png = images.load_png(file_data)
