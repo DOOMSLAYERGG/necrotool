@@ -4244,6 +4244,37 @@ update_visibility()
 local base64 = require("gamesense/base64")
 local clipboard_lib = require("gamesense/clipboard")
 
+-- ============================================================================
+-- Once-per-game-launch guard.
+-- gamesense re-runs every active script whenever ANY lua is loaded/unloaded (or
+-- on client.reload_active_scripts). That made necrotool replay its intro image
+-- and startup sound on "every breath" and feel like it kept reloading itself.
+-- The Panorama JS VM survives those lua reloads (it only resets on a full game
+-- restart), so we stash a flag there: the intro + sound fire on the FIRST run of
+-- a session and are silently skipped on every re-run, so once loaded the script
+-- just keeps running instead of re-initialising. Fails safe -> if Panorama is
+-- unreachable it reports "first run" so the intro still plays (no regression).
+-- Stored on _G (redefined cheaply each run) so it costs no main-chunk local and
+-- is reachable from every do-block below.
+-- ============================================================================
+_G.necro_session_first_run = function(tag)
+    local ok, res = pcall(function()
+        local fn = panorama.loadstring(
+            "try {" ..
+            "  var g = (function(){ return this; })();" ..
+            "  if (!g) { return 0; }" ..
+            "  if (!g.__necrotool_session) { g.__necrotool_session = {}; }" ..
+            "  var seen = g.__necrotool_session['" .. tag .. "'] ? 1 : 0;" ..
+            "  g.__necrotool_session['" .. tag .. "'] = 1;" ..
+            "  return seen;" ..
+            "} catch (e) { return 0; }")
+        return fn()
+    end)
+    if not ok then return true end                 -- panorama failed -> play (safe)
+    if res == 0 or res == false or res == nil then return true end
+    return false                                    -- already seen this session
+end
+
 -- ===== startup sound: download an mp3 from GitHub, save it to csgo/sound and
 -- play it on load (same idea as kittyhook's GitHub file loader / rinnegan's
 -- startup sound). Wrapped in a do-block so no chunk-level locals are added. =====
@@ -4283,13 +4314,16 @@ do
         end)
     end
 
-    local function play_on_first_frame()
-        if played or not ready then return end
-        played = true
-        pcall(native_Surface_PlaySound, SOUND_PLAY)
-        client.unset_event_callback("paint_ui", play_on_first_frame)
+    -- only play on the first run of this game session, not on every reload
+    if _G.necro_session_first_run("startup_sound") then
+        local function play_on_first_frame()
+            if played or not ready then return end
+            played = true
+            pcall(native_Surface_PlaySound, SOUND_PLAY)
+            client.unset_event_callback("paint_ui", play_on_first_frame)
+        end
+        client.set_event_callback("paint_ui", play_on_first_frame)
     end
-    client.set_event_callback("paint_ui", play_on_first_frame)
 end
 
 local function update_config_list()
@@ -4655,6 +4689,12 @@ local intro_animation = {
 }
 
 do
+    -- skip the intro entirely on script re-runs within the same game session
+    -- (loading another lua re-runs this file); only show it once per launch.
+    if not _G.necro_session_first_run("intro") then
+        intro_animation.active = false
+    end
+
     local http_ok, http = pcall(require, "gamesense/http")
     if not http_ok then http = nil end
 
